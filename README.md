@@ -81,6 +81,9 @@ docker run --env-file .env -v "$(pwd)/db:/db" -e DATABASE_PATH=/db/bot.sqlite3 t
 - `/addword <игра> <слово>` - игры: `dangerous_words`, `crocodile`, `alias`, `whoami`, `hat`.
 - `/addcurse <название> | <описание>`
 - `/addboss <имя> | <описание>`
+- `/listcontent` - показать добавленный контент.
+- `/delword <игра> <слово>`, `/delcurse <id>`, `/delboss <id>` - удалить добавленное.
+- `/importwords <игра>` - подпись к файлу (JSON-массив или слова по строкам/через запятую) для массового добавления слов.
 - `/backup` - получить файл базы.
 - `/restore` - прислать файл `.sqlite3` с подписью `/restore` (база будет заменена).
 

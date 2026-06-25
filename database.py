@@ -435,6 +435,52 @@ class SQLiteHistoryStorage:
             for row in rows
         ]
 
+    async def delete_custom_word(self, game_id: str, word: str) -> bool:
+        """удаляет пользовательское слово из пула игры"""
+        statement = delete(custom_words_table).where(
+            custom_words_table.c.game_id == game_id,
+            custom_words_table.c.word == word,
+        )
+        try:
+            async with self._engine.begin() as connection:
+                result = await connection.execute(statement)
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                f"Не удалось удалить слово из пула игры {game_id}."
+            ) from error
+
+        return result.rowcount > 0
+
+    async def delete_custom_curse(self, row_id: int) -> bool:
+        """удаляет пользовательское проклятье по числовому id"""
+        statement = delete(custom_curses_table).where(
+            custom_curses_table.c.id == row_id
+        )
+        try:
+            async with self._engine.begin() as connection:
+                result = await connection.execute(statement)
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                "Не удалось удалить пользовательское проклятье."
+            ) from error
+
+        return result.rowcount > 0
+
+    async def delete_custom_boss(self, row_id: int) -> bool:
+        """удаляет пользовательского босса по числовому id"""
+        statement = delete(custom_bosses_table).where(
+            custom_bosses_table.c.id == row_id
+        )
+        try:
+            async with self._engine.begin() as connection:
+                result = await connection.execute(statement)
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                "Не удалось удалить пользовательского босса."
+            ) from error
+
+        return result.rowcount > 0
+
     async def get_user_statistics(
         self, telegram_id: int
     ) -> dict[str, list[str]]:

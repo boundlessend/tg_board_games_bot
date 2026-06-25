@@ -23,7 +23,9 @@ from handlers.admin import (  # noqa: E402
 from handlers.content_admin import (  # noqa: E402
     _addword_usage,
     _is_sqlite_file,
+    _parse_custom_id,
     _parse_pair,
+    _parse_words_pack,
     create_content_admin_router,
 )
 from handlers.dangerous_words import create_dangerous_words_router  # noqa: E402
@@ -80,6 +82,12 @@ def test_pure_helpers() -> None:
     assert _parse_pair("назв | опис") == ("назв", "опис")
     assert _parse_pair("без разделителя") is None
     assert "crocodile" in _addword_usage({"dangerous_words", "crocodile"})
+
+    assert _parse_custom_id("cc_3", "cc_") == 3
+    assert _parse_custom_id("3", "cc_") == 3
+    assert _parse_custom_id("abc", "cc_") is None
+    assert _parse_words_pack(b'["a", "b"]') == ["a", "b"]
+    assert _parse_words_pack(b"a\nb, c") == ["a", "b", "c"]
 
     games = load_word_games(DATA_DIR)
     games_by_id = {game.game_id: game for game in games}
@@ -141,6 +149,12 @@ async def _exercise_storage() -> None:
     await storage.add_custom_boss("имя", "описание")
     custom_bosses = await storage.get_custom_bosses()
     assert custom_bosses and custom_bosses[0].id.startswith("cb_")
+
+    assert await storage.delete_custom_word("crocodile", "кастом") is True
+    assert await storage.delete_custom_word("crocodile", "кастом") is False
+    curse_id = int(custom_curses[0].id.removeprefix("cc_"))
+    assert await storage.delete_custom_curse(curse_id) is True
+    assert await storage.delete_custom_curse(curse_id) is False
 
     await storage.save_user_word(1, "альфа")
     await storage.save_user_word(2, "альфа")
