@@ -1,6 +1,6 @@
 """smoke-проверка сборки и ключевой логики бота без сети и токена
 
-запуск: python tests/smoke.py (из корня репозитория)
+запуск: pytest (из корня репозитория)
 """
 
 import asyncio
@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from aiogram import Dispatcher  # noqa: E402
 
 import keyboards  # noqa: E402
-from config import _resolve_database_path  # noqa: E402
+from config import _parse_admin_ids, _resolve_database_path  # noqa: E402
 from database import SQLiteHistoryStorage  # noqa: E402
 from handlers.admin import (  # noqa: E402
     _build_statistics_csv,
@@ -60,9 +60,18 @@ def test_content_loads_and_validates() -> None:
     assert len(content.bosses) == 100
 
     games = load_word_games(DATA_DIR)
-    assert [game.game_id for game in games] == ["crocodile", "alias"]
+    assert [game.game_id for game in games] == [
+        "crocodile",
+        "alias",
+        "whoami",
+        "hat",
+    ]
     for game in games:
-        assert len(game.words) == len(set(game.words))
+        lowered = [word.lower() for word in game.words]
+        assert len(lowered) == len(set(lowered))
+
+    whoami = next(game for game in games if game.game_id == "whoami")
+    assert "Гарри Поттер" in whoami.words
 
 
 def test_pure_helpers() -> None:
@@ -157,7 +166,7 @@ async def _exercise_storage() -> None:
         for row in main_menu.inline_keyboard
         for button in row
     ]
-    assert labels == ["Опасные слова", "Крокодил", "Алиас"]
+    assert labels == ["Опасные слова", "Крокодил", "Алиас", "Кто я?", "Шляпа"]
     for keyboard in [main_menu, keyboards.create_word_game_keyboard("crocodile")]:
         for row in keyboard.inline_keyboard:
             for button in row:
@@ -170,14 +179,8 @@ def test_storage_and_wiring() -> None:
     asyncio.run(_exercise_storage())
 
 
-def main() -> None:
-    """запускает все smoke-проверки"""
-    test_config_resolves_database_path()
-    test_content_loads_and_validates()
-    test_pure_helpers()
-    test_storage_and_wiring()
-    print("SMOKE OK")
-
-
-if __name__ == "__main__":
-    main()
+def test_parse_admin_ids() -> None:
+    """ADMIN_IDS парсится в множество telegram id"""
+    assert _parse_admin_ids(None) == frozenset()
+    assert _parse_admin_ids("") == frozenset()
+    assert _parse_admin_ids("111, 222 ,333") == frozenset({111, 222, 333})

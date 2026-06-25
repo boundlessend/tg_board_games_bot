@@ -17,9 +17,7 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install ruff mypy
+        run: pip install -r requirements-dev.txt
 
       - name: Ruff (lint)
         run: ruff check .
@@ -27,8 +25,5 @@ jobs:
       - name: Mypy (types)
         run: mypy --ignore-missing-imports .
 
-      - name: Compile
-        run: python -m compileall bot.py config.py constants.py database.py exceptions.py keyboards.py handlers services
-
-      - name: Smoke tests
-        run: python tests/smoke.py
+      - name: Tests
+        run: pytest --cov=. --cov-report=term-missing
