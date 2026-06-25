@@ -65,6 +65,8 @@ class WordGame:
 _WORD_GAME_FILES: tuple[tuple[str, str, str], ...] = (
     ("crocodile", "Крокодил", "crocodile.json"),
     ("alias", "Алиас", "alias.json"),
+    ("whoami", "Кто я?", "whoami.json"),
+    ("hat", "Шляпа", "hat.json"),
 )
 
 
@@ -93,11 +95,12 @@ def _parse_word_list(data: Any, file_name: str) -> list[str]:
     for item in value:
         if not isinstance(item, str) or item.strip() == "":
             raise DataFileError(f"{file_name} содержит неверное слово.")
-        words.append(item.strip().lower())
+        words.append(item.strip())
 
     if len(words) == 0:
         raise DataFileError(f"{file_name}: список слов пуст.")
-    if len(words) != len(set(words)):
+    lowered = [word.lower() for word in words]
+    if len(lowered) != len(set(lowered)):
         raise DataFileError(f"{file_name} содержит повторяющиеся слова.")
 
     return words
