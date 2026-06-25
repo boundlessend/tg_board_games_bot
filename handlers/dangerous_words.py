@@ -2,24 +2,23 @@ import logging
 from collections.abc import Awaitable, Callable
 
 from aiogram import F, Router
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
 from constants import (
-    BACK_TO_DANGEROUS_WORDS_TITLE,
-    BOSSES_LIMIT,
-    CREATE_BOSS_TITLE,
-    CREATE_CURSE_TITLE,
-    CREATE_WORD_TITLE,
-    CURSES_LIMIT,
-    DANGEROUS_WORDS_GAME_TITLE,
-    DANGEROUS_WORDS_HOST_TITLE,
-    DANGEROUS_WORDS_PLAYER_TITLE,
-    RESET_BOSSES_TITLE,
-    RESET_CURSES_TITLE,
-    RESET_WORDS_TITLE,
-    WORDS_LIMIT,
+    CB_DW_BOSS,
+    CB_DW_CURSE,
+    CB_DW_HOST,
+    CB_DW_NEW_GAME,
+    CB_DW_PLAYER,
+    CB_DW_RESET_BOSSES,
+    CB_DW_RESET_CURSES,
+    CB_DW_RESET_WORDS,
+    CB_DW_ROLES,
+    CB_DW_WORD,
+    DANGEROUS_WORDS_GAME_ID,
 )
 from database import DatabaseError, SQLiteHistoryStorage
+from handlers.ui import edit_menu, edit_result
 from keyboards import (
     create_dangerous_words_host_keyboard,
     create_dangerous_words_player_keyboard,
@@ -43,39 +42,52 @@ def create_dangerous_words_router(
     """создаёт роутер помощника опасные слова"""
     router = Router()
 
-    @router.message(F.text == DANGEROUS_WORDS_GAME_TITLE)
-    async def handle_dangerous_words_menu(message: Message) -> None:
-        """показывает меню помощника опасные слова"""
-        await _answer_dangerous_words_role_menu(message)
+    @router.callback_query(F.data == CB_DW_ROLES)
+    async def handle_dangerous_words_menu(callback: CallbackQuery) -> None:
+        """показывает выбор роли в помощнике опасные слова"""
+        await edit_menu(
+            callback,
+            "Играем в “Опасные слова”.\nВыбери роль:",
+            create_dangerous_words_role_keyboard(),
+        )
 
-    @router.message(F.text == BACK_TO_DANGEROUS_WORDS_TITLE)
-    async def handle_back_to_dangerous_words_menu(message: Message) -> None:
-        """возвращает к выбору роли в помощнике опасные слова"""
-        await _answer_dangerous_words_role_menu(message)
-
-    @router.message(F.text == DANGEROUS_WORDS_HOST_TITLE)
-    async def handle_dangerous_words_host_menu(message: Message) -> None:
+    @router.callback_query(F.data == CB_DW_HOST)
+    async def handle_dangerous_words_host_menu(
+        callback: CallbackQuery,
+    ) -> None:
         """показывает меню ведущего"""
-        await message.answer(
+        await edit_menu(
+            callback,
             "Режим ведущего.\nВыберите действие:",
-            reply_markup=create_dangerous_words_host_keyboard(),
+            create_dangerous_words_host_keyboard(),
         )
 
-    @router.message(F.text == DANGEROUS_WORDS_PLAYER_TITLE)
-    async def handle_dangerous_words_player_menu(message: Message) -> None:
+    @router.callback_query(F.data == CB_DW_PLAYER)
+    async def handle_dangerous_words_player_menu(
+        callback: CallbackQuery,
+    ) -> None:
         """показывает меню игрока"""
-        await message.answer(
+        await edit_menu(
+            callback,
             "Режим игрока.\nВыберите действие:",
-            reply_markup=create_dangerous_words_player_keyboard(),
+            create_dangerous_words_player_keyboard(),
         )
 
-    @router.message(F.text == CREATE_WORD_TITLE)
-    async def handle_create_word(message: Message) -> None:
+    @router.callback_query(F.data == CB_DW_WORD)
+    async def handle_create_word(callback: CallbackQuery) -> None:
         """выдаёт новое слово без повтора для пользователя"""
-        telegram_id = _extract_telegram_id(message)
+        telegram_id = callback.from_user.id
         try:
+            pool = list(
+                dict.fromkeys(
+                    content.words
+                    + await storage.get_custom_words(
+                        DANGEROUS_WORDS_GAME_ID
+                    )
+                )
+            )
             word = await select_unique_item(
-                items=content.words,
+                items=pool,
                 get_item_id=_get_string_id,
                 get_seen_ids=storage.get_user_words,
                 save_seen_id=storage.save_user_word,
@@ -83,26 +95,30 @@ def create_dangerous_words_router(
             )
             word_count = await storage.count_user_words(telegram_id)
         except EmptyPoolError:
-            await message.answer("Список кончился, напомни Сене его пополнить")
+            await callback.answer(
+                "Список кончился, напомни Сене его пополнить",
+                show_alert=True,
+            )
             return
         except DatabaseError:
             logger.exception(
                 "database_error",
                 extra={"telegram_id": telegram_id, "action": "create_word"},
             )
-            await message.answer(
-                "Не удалось сохранить слово. Попробуйте позже."
+            await callback.answer(
+                "Не удалось сохранить слово. Попробуйте позже.",
+                show_alert=True,
             )
             return
 
-        await message.answer(
-            f"Новое слово ({word_count}/{WORDS_LIMIT}):\n\n{word}"
+        await edit_result(
+            callback, f"Новое слово ({word_count}/{len(pool)}):\n\n{word}"
         )
 
-    @router.message(F.text == RESET_WORDS_TITLE)
-    async def handle_reset_words(message: Message) -> None:
+    @router.callback_query(F.data == CB_DW_RESET_WORDS)
+    async def handle_reset_words(callback: CallbackQuery) -> None:
         """сбрасывает историю слов пользователя"""
-        telegram_id = _extract_telegram_id(message)
+        telegram_id = callback.from_user.id
         try:
             await storage.reset_user_words(telegram_id)
         except DatabaseError:
@@ -110,20 +126,22 @@ def create_dangerous_words_router(
                 "database_error",
                 extra={"telegram_id": telegram_id, "action": "reset_words"},
             )
-            await message.answer(
-                "Не удалось сбросить слова. Попробуйте позже."
+            await callback.answer(
+                "Не удалось сбросить слова. Попробуйте позже.",
+                show_alert=True,
             )
             return
 
-        await message.answer(f"Слова сброшены. Счётчик снова 0/{WORDS_LIMIT}.")
+        await callback.answer("Слова сброшены. Счётчик обнулён.", show_alert=True)
 
-    @router.message(F.text == CREATE_CURSE_TITLE)
-    async def handle_create_curse(message: Message) -> None:
+    @router.callback_query(F.data == CB_DW_CURSE)
+    async def handle_create_curse(callback: CallbackQuery) -> None:
         """выдаёт новое проклятье без повтора в текущем круге"""
-        telegram_id = _extract_telegram_id(message)
+        telegram_id = callback.from_user.id
         try:
+            pool = content.curses + await storage.get_custom_curses()
             curse, is_new_cycle = await _create_unique_cycle_item(
-                items=content.curses,
+                items=pool,
                 get_item_id=_get_curse_id,
                 get_seen_ids=storage.get_user_curses,
                 save_seen_id=storage.save_user_curse,
@@ -136,8 +154,9 @@ def create_dangerous_words_router(
                 "database_error",
                 extra={"telegram_id": telegram_id, "action": "create_curse"},
             )
-            await message.answer(
-                "Не удалось сохранить проклятье. Попробуйте позже."
+            await callback.answer(
+                "Не удалось сохранить проклятье. Попробуйте позже.",
+                show_alert=True,
             )
             return
         except EmptyPoolError:
@@ -145,23 +164,24 @@ def create_dangerous_words_router(
                 "empty_pool_error",
                 extra={"telegram_id": telegram_id, "action": "create_curse"},
             )
-            await message.answer(
-                "Список проклятий пуст, напомни Сене его пополнить."
+            await callback.answer(
+                "Список проклятий пуст, напомни Сене его пополнить.",
+                show_alert=True,
             )
             return
 
-        if is_new_cycle:
-            await message.answer(
-                "Список проклятий кончился, напомни Сене его пополнить."
-            )
-        await message.answer(
-            f"Новое проклятье ({curse_count}/{CURSES_LIMIT}):\n\n{curse.title}\n{curse.description}"
+        text = (
+            f"Новое проклятье ({curse_count}/{len(pool)}):\n\n"
+            f"{curse.title}\n{curse.description}"
         )
+        if is_new_cycle:
+            text = "Проклятья закончились, начинаем новый круг.\n\n" + text
+        await edit_result(callback, text)
 
-    @router.message(F.text == RESET_CURSES_TITLE)
-    async def handle_reset_curses(message: Message) -> None:
+    @router.callback_query(F.data == CB_DW_RESET_CURSES)
+    async def handle_reset_curses(callback: CallbackQuery) -> None:
         """сбрасывает историю проклятий пользователя"""
-        telegram_id = _extract_telegram_id(message)
+        telegram_id = callback.from_user.id
         try:
             await storage.reset_user_curses(telegram_id)
         except DatabaseError:
@@ -169,22 +189,24 @@ def create_dangerous_words_router(
                 "database_error",
                 extra={"telegram_id": telegram_id, "action": "reset_curses"},
             )
-            await message.answer(
-                "Не удалось сбросить проклятья. Попробуйте позже."
+            await callback.answer(
+                "Не удалось сбросить проклятья. Попробуйте позже.",
+                show_alert=True,
             )
             return
 
-        await message.answer(
-            f"Проклятья сброшены. Счётчик снова 0/{CURSES_LIMIT}."
+        await callback.answer(
+            "Проклятья сброшены. Счётчик обнулён.", show_alert=True
         )
 
-    @router.message(F.text == CREATE_BOSS_TITLE)
-    async def handle_create_boss(message: Message) -> None:
+    @router.callback_query(F.data == CB_DW_BOSS)
+    async def handle_create_boss(callback: CallbackQuery) -> None:
         """выдаёт нового босса без повтора в текущем круге"""
-        telegram_id = _extract_telegram_id(message)
+        telegram_id = callback.from_user.id
         try:
+            pool = content.bosses + await storage.get_custom_bosses()
             boss, is_new_cycle = await _create_unique_cycle_item(
-                items=content.bosses,
+                items=pool,
                 get_item_id=_get_boss_id,
                 get_seen_ids=storage.get_user_bosses,
                 save_seen_id=storage.save_user_boss,
@@ -197,8 +219,9 @@ def create_dangerous_words_router(
                 "database_error",
                 extra={"telegram_id": telegram_id, "action": "create_boss"},
             )
-            await message.answer(
-                "Не удалось сохранить босса. Попробуйте позже."
+            await callback.answer(
+                "Не удалось сохранить босса. Попробуйте позже.",
+                show_alert=True,
             )
             return
         except EmptyPoolError:
@@ -206,23 +229,24 @@ def create_dangerous_words_router(
                 "empty_pool_error",
                 extra={"telegram_id": telegram_id, "action": "create_boss"},
             )
-            await message.answer(
-                "Список боссов пуст, напомни Сене его пополнить."
+            await callback.answer(
+                "Список боссов пуст, напомни Сене его пополнить.",
+                show_alert=True,
             )
             return
 
-        if is_new_cycle:
-            await message.answer(
-                "Список боссов кончился, напомни Сене его пополнить."
-            )
-        await message.answer(
-            f"Новый босс ({boss_count}/{BOSSES_LIMIT}):\n\n{boss.name}\n{boss.description}"
+        text = (
+            f"Новый босс ({boss_count}/{len(pool)}):\n\n"
+            f"{boss.name}\n{boss.description}"
         )
+        if is_new_cycle:
+            text = "Боссы закончились, начинаем новый круг.\n\n" + text
+        await edit_result(callback, text)
 
-    @router.message(F.text == RESET_BOSSES_TITLE)
-    async def handle_reset_bosses(message: Message) -> None:
+    @router.callback_query(F.data == CB_DW_RESET_BOSSES)
+    async def handle_reset_bosses(callback: CallbackQuery) -> None:
         """сбрасывает историю боссов пользователя"""
-        telegram_id = _extract_telegram_id(message)
+        telegram_id = callback.from_user.id
         try:
             await storage.reset_user_bosses(telegram_id)
         except DatabaseError:
@@ -230,29 +254,43 @@ def create_dangerous_words_router(
                 "database_error",
                 extra={"telegram_id": telegram_id, "action": "reset_bosses"},
             )
-            await message.answer(
-                "Не удалось сбросить боссов. Попробуйте позже."
+            await callback.answer(
+                "Не удалось сбросить боссов. Попробуйте позже.",
+                show_alert=True,
             )
             return
 
-        await message.answer(
-            f"Боссы сброшены. Счётчик снова 0/{BOSSES_LIMIT}."
+        await callback.answer(
+            "Боссы сброшены. Счётчик обнулён.", show_alert=True
+        )
+
+    @router.callback_query(F.data == CB_DW_NEW_GAME)
+    async def handle_new_game(callback: CallbackQuery) -> None:
+        """сбрасывает всю историю выдач пользователя для новой партии"""
+        telegram_id = callback.from_user.id
+        try:
+            await storage.reset_user_all(telegram_id)
+        except DatabaseError:
+            logger.exception(
+                "database_error",
+                extra={"telegram_id": telegram_id, "action": "new_game"},
+            )
+            await callback.answer(
+                "Не удалось начать новую игру. Попробуйте позже.",
+                show_alert=True,
+            )
+            return
+
+        await callback.answer(
+            "Новая игра: слова, проклятья и боссы сброшены.", show_alert=True
         )
 
     @router.message(F.text)
     async def handle_unknown_text(message: Message) -> None:
         """отвечает на неизвестный текст"""
-        await message.answer("Выберите действие с помощью кнопок меню.")
+        await message.answer("Открой меню командой /start.")
 
     return router
-
-
-async def _answer_dangerous_words_role_menu(message: Message) -> None:
-    """показывает выбор роли помощника опасные слова"""
-    await message.answer(
-        "Играем в “Опасные слова”.\nВыбери роль:",
-        reply_markup=create_dangerous_words_role_keyboard(),
-    )
 
 
 async def _create_unique_cycle_item[T](
@@ -284,13 +322,6 @@ async def _create_unique_cycle_item[T](
         return item, True
 
     return item, False
-
-
-def _extract_telegram_id(message: Message) -> int:
-    """возвращает telegram id отправителя сообщения"""
-    if message.from_user is None:
-        raise DatabaseError("Не удалось определить telegram_id пользователя.")
-    return message.from_user.id
 
 
 def _get_string_id(item: str) -> str:
