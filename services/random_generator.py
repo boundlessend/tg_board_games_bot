@@ -60,6 +60,56 @@ class DangerousWordsContent:
     bosses: list[Boss]
 
 
+@dataclass(frozen=True)
+class WordGame:
+    """словесная игра с одним пулом слов"""
+
+    game_id: str
+    title: str
+    words: list[str]
+
+
+_WORD_GAME_FILES: tuple[tuple[str, str, str], ...] = (
+    ("crocodile", "Крокодил", "crocodile.json"),
+    ("alias", "Алиас", "alias.json"),
+)
+
+
+def load_word_games(data_dir: Path) -> list[WordGame]:
+    """загружает словесные игры из их json-файлов"""
+    games: list[WordGame] = []
+    for game_id, title, file_name in _WORD_GAME_FILES:
+        data = _read_json_file(data_dir / file_name)
+        words = _parse_word_list(data, file_name)
+        games.append(WordGame(game_id=game_id, title=title, words=words))
+    return games
+
+
+def _parse_word_list(data: Any, file_name: str) -> list[str]:
+    """проверяет структуру списка слов словесной игры"""
+    if not isinstance(data, dict):
+        raise DataFileError(
+            f"{file_name} должен быть объектом с ключом words."
+        )
+
+    value = data.get("words")
+    if not isinstance(value, list):
+        raise DataFileError(f"{file_name} должен содержать список words.")
+
+    words: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or item.strip() == "":
+            raise DataFileError(f"{file_name} содержит неверное слово.")
+        words.append(item.strip().lower())
+
+    if len(words) == 0:
+        raise DataFileError(f"{file_name}: список слов пуст.")
+    if len(words) != len(set(words)):
+        raise DataFileError(f"{file_name} содержит повторяющиеся слова.")
+
+    return words
+
+
 async def select_unique_item[T](
     items: list[T],
     get_item_id: Callable[[T], str],
