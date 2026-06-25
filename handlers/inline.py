@@ -18,7 +18,11 @@ def create_inline_router(content: DangerousWordsContent) -> Router:
 
     @router.inline_query()
     async def handle_inline_query(query: InlineQuery) -> None:
-        """выдаёт случайные слова в любом чате без учёта истории"""
+        """выдаёт случайные слова в любом чате без учёта истории
+
+        answer помечен type: ignore: список однотипных статей корректен в
+        рантайме, но mypy ругается на инвариантность list против union-типа
+        """
         sample_size = min(INLINE_RESULTS_LIMIT, len(content.words))
         words = random.sample(content.words, k=sample_size)
         results = [
@@ -31,8 +35,6 @@ def create_inline_router(content: DangerousWordsContent) -> Router:
             )
             for index, word in enumerate(words)
         ]
-        # ponytail: список однотипных статей корректен в рантайме,
-        # mypy ругается на инвариантность list против union-типа answer
         await query.answer(results, cache_time=0, is_personal=True)  # type: ignore[arg-type]
 
     return router

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import random
-from typing import Any, TypedDict
+from typing import Any
 
 from exceptions import DuplicateHistoryItemError
 
@@ -24,13 +24,6 @@ class DataFileError(ContentError):
     """ошибка структуры или чтения json-файла с данными"""
 
     pass
-
-
-class WordsData(TypedDict):
-    """структура файла со словами"""
-
-    ordinary: list[str]
-    fantasy: list[str]
 
 
 @dataclass(frozen=True)

@@ -1,4 +1,5 @@
-aiogram>=3.6,<4.0
+aiogram>=3.29,<4.0
+aiohttp>=3.14.1
 aiosqlite>=0.20,<1.0
 python-dotenv>=1.0,<2.0
 SQLAlchemy>=2.0,<3.0

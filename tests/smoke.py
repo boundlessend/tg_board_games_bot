@@ -107,19 +107,16 @@ async def _exercise_storage() -> None:
     assert cycle_one is False and cycle_two is False
     assert await storage.count_user_game_words(5, "crocodile") == 2
 
-    # авто-цикл на исчерпанном пуле
     pool = ["a", "b"]
     await _select_word_with_cycle(pool, storage, 9, "tg")
     await _select_word_with_cycle(pool, storage, 9, "tg")
     _, is_new_cycle = await _select_word_with_cycle(pool, storage, 9, "tg")
     assert is_new_cycle is True
 
-    # сброс всей истории
     await storage.save_user_word(7, "слово")
     await storage.reset_user_all(7)
     assert await storage.count_user_words(7) == 0
 
-    # пользовательский контент в SQLite (T-14)
     await storage.add_custom_word("crocodile", "кастом")
     assert "кастом" in await storage.get_custom_words("crocodile")
     duplicate_raised = False
@@ -135,7 +132,6 @@ async def _exercise_storage() -> None:
     custom_bosses = await storage.get_custom_bosses()
     assert custom_bosses and custom_bosses[0].id.startswith("cb_")
 
-    # аналитика
     await storage.save_user_word(1, "альфа")
     await storage.save_user_word(2, "альфа")
     statistics = await storage.get_all_user_statistics()
@@ -143,7 +139,6 @@ async def _exercise_storage() -> None:
     csv_text = _build_statistics_csv(statistics)
     assert csv_text.splitlines()[0] == "telegram_id,words,curses,bosses"
 
-    # регистрация всех роутеров и сборка клавиатур
     dispatcher = Dispatcher()
     dispatcher.include_router(create_start_router(games))
     dispatcher.include_router(
