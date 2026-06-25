@@ -29,3 +29,6 @@ jobs:
 
       - name: Compile
         run: python -m compileall bot.py config.py constants.py database.py exceptions.py keyboards.py handlers services
+
+      - name: Smoke tests
+        run: python tests/smoke.py

@@ -1,5 +1,6 @@
 # tg_board_games_bot
 
+[![CI](https://github.com/boundlessend/tg_board_games_bot/actions/workflows/ci.yml/badge.svg)](https://github.com/boundlessend/tg_board_games_bot/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 [![aiogram](https://img.shields.io/badge/aiogram-3.x-2CA5E0)](https://aiogram.dev/)
 [![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.x-D71F00)](https://www.sqlalchemy.org/)
