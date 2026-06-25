@@ -22,6 +22,7 @@ from handlers.admin import (  # noqa: E402
 )
 from handlers.content_admin import (  # noqa: E402
     _addword_usage,
+    _is_sqlite_file,
     _parse_pair,
     create_content_admin_router,
 )
@@ -190,3 +191,32 @@ def test_parse_admin_ids() -> None:
     assert _parse_admin_ids(None) == frozenset()
     assert _parse_admin_ids("") == frozenset()
     assert _parse_admin_ids("111, 222 ,333") == frozenset({111, 222, 333})
+
+
+async def _exercise_backup_restore() -> None:
+    """проверяет замену базы и распознавание файла SQLite"""
+    base = Path(tempfile.mkdtemp())
+    path_a = base / "a.sqlite3"
+    path_b = base / "b.sqlite3"
+
+    storage_a = SQLiteHistoryStorage(path_a)
+    await storage_a.initialize()
+    await storage_a.save_user_word(1, "из_a")
+
+    storage_b = SQLiteHistoryStorage(path_b)
+    await storage_b.initialize()
+    await storage_b.save_user_word(2, "из_b")
+
+    assert _is_sqlite_file(path_b) is True
+    not_sqlite = base / "x.bin"
+    not_sqlite.write_bytes(b"not a database")
+    assert _is_sqlite_file(not_sqlite) is False
+
+    await storage_a.replace_database(path_b)
+    assert await storage_a.count_user_words(2) == 1
+    assert await storage_a.count_user_words(1) == 0
+
+
+def test_backup_restore() -> None:
+    """прогоняет проверки бэкапа/восстановления"""
+    asyncio.run(_exercise_backup_restore())

@@ -81,6 +81,8 @@ docker run --env-file .env -v "$(pwd)/db:/db" -e DATABASE_PATH=/db/bot.sqlite3 t
 - `/addword <игра> <слово>` - игры: `dangerous_words`, `crocodile`, `alias`, `whoami`, `hat`.
 - `/addcurse <название> | <описание>`
 - `/addboss <имя> | <описание>`
+- `/backup` - получить файл базы.
+- `/restore` - прислать файл `.sqlite3` с подписью `/restore` (база будет заменена).
 
 ## Добавление игр
 

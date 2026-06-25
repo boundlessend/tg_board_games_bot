@@ -1,8 +1,10 @@
 import logging
+import tempfile
+from pathlib import Path
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.types import FSInputFile, Message
 
 from constants import DANGEROUS_WORDS_GAME_ID
 from database import DatabaseError, SQLiteHistoryStorage
@@ -124,6 +126,63 @@ def create_content_admin_router(
 
         await message.answer(f"Босс добавлен: {name}")
 
+    @router.message(Command("backup"))
+    async def handle_backup(message: Message) -> None:
+        if not _is_admin(message, admin_ids):
+            return
+
+        document = FSInputFile(
+            storage.database_path, filename="bot.sqlite3"
+        )
+        await message.answer_document(document, caption="Бэкап базы")
+
+    @router.message(_is_restore_document)
+    async def handle_restore(message: Message) -> None:
+        if not _is_admin(message, admin_ids):
+            return
+
+        document = message.document
+        bot = message.bot
+        if document is None or bot is None:
+            return
+
+        destination = Path(tempfile.mkdtemp()) / "restore.sqlite3"
+        try:
+            await bot.download(document, destination=destination)
+        except Exception:
+            logger.exception("download_failed", extra={"action": "restore"})
+            await message.answer("Не удалось скачать файл.")
+            return
+
+        if not _is_sqlite_file(destination):
+            await message.answer("Это не похоже на файл SQLite-базы.")
+            return
+
+        try:
+            await storage.replace_database(destination)
+        except DatabaseError:
+            logger.exception(
+                "database_error",
+                extra={
+                    "telegram_id": (
+                        message.from_user.id if message.from_user else None
+                    ),
+                    "action": "restore",
+                },
+            )
+            await message.answer("Не удалось восстановить базу.")
+            return
+
+        await message.answer("База восстановлена из файла.")
+
+    @router.message(Command("restore"))
+    async def handle_restore_hint(message: Message) -> None:
+        if not _is_admin(message, admin_ids):
+            return
+        await message.answer(
+            "Пришлите файл базы (.sqlite3) с подписью /restore."
+        )
+
     return router
 
 
@@ -154,3 +213,20 @@ def _parse_pair(args: str | None) -> tuple[str, str] | None:
         return None
 
     return left, right
+
+
+def _is_restore_document(message: Message) -> bool:
+    """сообщение с файлом и подписью /restore"""
+    if message.document is None or message.caption is None:
+        return False
+    return message.caption.strip().startswith("/restore")
+
+
+def _is_sqlite_file(path: Path) -> bool:
+    """проверяет сигнатуру файла SQLite по заголовку"""
+    try:
+        with path.open("rb") as file:
+            header = file.read(16)
+    except OSError:
+        return False
+    return header == b"SQLite format 3\x00"

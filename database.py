@@ -1,3 +1,4 @@
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -157,6 +158,23 @@ class SQLiteHistoryStorage:
         self._engine: AsyncEngine = create_async_engine(
             f"sqlite+aiosqlite:///{database_path.as_posix()}"
         )
+
+    @property
+    def database_path(self) -> Path:
+        """путь к файлу базы"""
+        return self._database_path
+
+    async def replace_database(self, source_path: Path) -> None:
+        """заменяет файл базы и пересоздаёт подключение"""
+        try:
+            await self._engine.dispose()
+            shutil.copyfile(source_path, self._database_path)
+            self._engine = create_async_engine(
+                f"sqlite+aiosqlite:///{self._database_path.as_posix()}"
+            )
+        except (OSError, SQLAlchemyError) as error:
+            raise DatabaseError("Не удалось заменить файл базы.") from error
+        await self.initialize()
 
     async def initialize(self) -> None:
         """создаёт каталог, таблицы и недостающие колонки при запуске бота"""
