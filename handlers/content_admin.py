@@ -53,7 +53,9 @@ def create_content_admin_router(
             logger.exception(
                 "database_error",
                 extra={
-                    "telegram_id": message.from_user.id,
+                    "telegram_id": (
+                        message.from_user.id if message.from_user else None
+                    ),
                     "action": "add_word",
                 },
             )
@@ -81,7 +83,9 @@ def create_content_admin_router(
             logger.exception(
                 "database_error",
                 extra={
-                    "telegram_id": message.from_user.id,
+                    "telegram_id": (
+                        message.from_user.id if message.from_user else None
+                    ),
                     "action": "add_curse",
                 },
             )
@@ -109,7 +113,9 @@ def create_content_admin_router(
             logger.exception(
                 "database_error",
                 extra={
-                    "telegram_id": message.from_user.id,
+                    "telegram_id": (
+                        message.from_user.id if message.from_user else None
+                    ),
                     "action": "add_boss",
                 },
             )

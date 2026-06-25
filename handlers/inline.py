@@ -31,6 +31,8 @@ def create_inline_router(content: DangerousWordsContent) -> Router:
             )
             for index, word in enumerate(words)
         ]
-        await query.answer(results, cache_time=0, is_personal=True)
+        # ponytail: список однотипных статей корректен в рантайме,
+        # mypy ругается на инвариантность list против union-типа answer
+        await query.answer(results, cache_time=0, is_personal=True)  # type: ignore[arg-type]
 
     return router
