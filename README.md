@@ -6,7 +6,7 @@
 [![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.x-D71F00)](https://www.sqlalchemy.org/)
 [![SQLite](https://img.shields.io/badge/storage-SQLite-003B57)](https://www.sqlite.org/)
 [![Telegram Bot](https://img.shields.io/badge/Telegram-bot-26A5E4)](https://core.telegram.org/bots)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-green)](LICENSE)
 
 НА-СТОЛ-КИ by senya
 
@@ -95,4 +95,4 @@ docker run --env-file .env -v "$(pwd)/db:/db" -e DATABASE_PATH=/db/bot.sqlite3 t
 
 ## Лицензия
 
-MIT. Подробности в `LICENSE`.
+BSD-3-Clause. Подробности в `LICENSE`.
