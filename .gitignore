@@ -6,3 +6,7 @@ bot.sqlite3
 .DS_Store
 .cgcignore
 Опасные слова_правила.pdf
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
