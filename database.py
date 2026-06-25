@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import (
@@ -5,16 +6,23 @@ from sqlalchemy import (
     Integer,
     MetaData,
     String,
+    Subquery,
     Table,
     UniqueConstraint,
     delete,
     func,
     insert,
     select,
+    text,
     union,
+    union_all,
 )
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    create_async_engine,
+)
 
 from constants import (
     BOSSES_HISTORY_KEY,
@@ -35,6 +43,7 @@ user_words_table = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("telegram_id", Integer, nullable=False),
     Column("word", String, nullable=False),
+    Column("issued_at", String, nullable=True),
     UniqueConstraint("telegram_id", "word"),
 )
 
@@ -44,6 +53,7 @@ user_curses_table = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("telegram_id", Integer, nullable=False),
     Column("curse_id", String, nullable=False),
+    Column("issued_at", String, nullable=True),
     UniqueConstraint("telegram_id", "curse_id"),
 )
 
@@ -53,6 +63,7 @@ user_bosses_table = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("telegram_id", Integer, nullable=False),
     Column("boss_id", String, nullable=False),
+    Column("issued_at", String, nullable=True),
     UniqueConstraint("telegram_id", "boss_id"),
 )
 
@@ -63,6 +74,7 @@ user_game_words_table = Table(
     Column("telegram_id", Integer, nullable=False),
     Column("game_id", String, nullable=False),
     Column("word", String, nullable=False),
+    Column("issued_at", String, nullable=True),
     UniqueConstraint("telegram_id", "game_id", "word"),
 )
 
@@ -92,6 +104,46 @@ custom_bosses_table = Table(
 )
 
 
+_HISTORY_TABLE_NAMES: tuple[str, ...] = (
+    USER_WORDS_TABLE_NAME,
+    USER_CURSES_TABLE_NAME,
+    USER_BOSSES_TABLE_NAME,
+    "user_game_words",
+)
+
+
+def _now_iso() -> str:
+    """возвращает текущее время в ISO-формате UTC"""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def iso_days_ago(days: int) -> str:
+    """возвращает ISO-метку времени days дней назад (UTC)"""
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
+def _issuances_subquery() -> Subquery:
+    """строит объединение всех выдач как (telegram_id, issued_at)"""
+    return union_all(
+        select(
+            user_words_table.c.telegram_id.label("telegram_id"),
+            user_words_table.c.issued_at.label("issued_at"),
+        ),
+        select(
+            user_curses_table.c.telegram_id.label("telegram_id"),
+            user_curses_table.c.issued_at.label("issued_at"),
+        ),
+        select(
+            user_bosses_table.c.telegram_id.label("telegram_id"),
+            user_bosses_table.c.issued_at.label("issued_at"),
+        ),
+        select(
+            user_game_words_table.c.telegram_id.label("telegram_id"),
+            user_game_words_table.c.issued_at.label("issued_at"),
+        ),
+    ).subquery()
+
+
 class DatabaseError(RuntimeError):
     """ошибка работы с базой данных"""
 
@@ -107,15 +159,30 @@ class SQLiteHistoryStorage:
         )
 
     async def initialize(self) -> None:
-        """создаёт каталог и таблицы истории при запуске бота"""
+        """создаёт каталог, таблицы и недостающие колонки при запуске бота"""
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             async with self._engine.begin() as connection:
                 await connection.run_sync(metadata.create_all)
+                for table_name in _HISTORY_TABLE_NAMES:
+                    await self._ensure_issued_at_column(connection, table_name)
         except SQLAlchemyError as error:
             raise DatabaseError(
                 "Не удалось инициализировать SQLite-базу."
             ) from error
+
+    async def _ensure_issued_at_column(
+        self, connection: AsyncConnection, table_name: str
+    ) -> None:
+        """добавляет колонку issued_at в существующую таблицу, если её нет"""
+        result = await connection.execute(
+            text(f"PRAGMA table_info({table_name})")
+        )
+        columns = {row[1] for row in result.fetchall()}
+        if "issued_at" not in columns:
+            await connection.execute(
+                text(f"ALTER TABLE {table_name} ADD COLUMN issued_at TEXT")
+            )
 
     async def get_user_words(self, telegram_id: int) -> set[str]:
         """возвращает слова, уже выданные пользователю"""
@@ -193,7 +260,10 @@ class SQLiteHistoryStorage:
     ) -> None:
         """сохраняет выданное пользователю слово словесной игры"""
         statement = insert(user_game_words_table).values(
-            telegram_id=telegram_id, game_id=game_id, word=word
+            telegram_id=telegram_id,
+            game_id=game_id,
+            word=word,
+            issued_at=_now_iso(),
         )
         try:
             async with self._engine.begin() as connection:
@@ -383,6 +453,65 @@ class SQLiteHistoryStorage:
         """возвращает количество выданных пользователю боссов"""
         return await self._count_user_items(user_bosses_table, telegram_id)
 
+    async def count_issuances_since(self, cutoff_iso: str) -> int:
+        """считает выдачи во всех играх с момента cutoff_iso"""
+        issuances = _issuances_subquery()
+        statement = (
+            select(func.count())
+            .select_from(issuances)
+            .where(issuances.c.issued_at >= cutoff_iso)
+        )
+        try:
+            async with self._engine.connect() as connection:
+                result = await connection.execute(statement)
+                count = result.scalar_one()
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                "Не удалось посчитать выдачи за период."
+            ) from error
+
+        return int(count)
+
+    async def count_active_users_since(self, cutoff_iso: str) -> int:
+        """считает уникальных пользователей с выдачами с момента cutoff_iso"""
+        issuances = _issuances_subquery()
+        statement = select(
+            func.count(func.distinct(issuances.c.telegram_id))
+        ).where(issuances.c.issued_at >= cutoff_iso)
+        try:
+            async with self._engine.connect() as connection:
+                result = await connection.execute(statement)
+                count = result.scalar_one()
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                "Не удалось посчитать активных пользователей."
+            ) from error
+
+        return int(count)
+
+    async def issuances_by_day(
+        self, cutoff_iso: str
+    ) -> list[tuple[str, int]]:
+        """возвращает количество выдач по дням с момента cutoff_iso"""
+        issuances = _issuances_subquery()
+        day = func.substr(issuances.c.issued_at, 1, 10).label("day")
+        statement = (
+            select(day, func.count())
+            .where(issuances.c.issued_at >= cutoff_iso)
+            .group_by(day)
+            .order_by(day)
+        )
+        try:
+            async with self._engine.connect() as connection:
+                result = await connection.execute(statement)
+                rows = result.fetchall()
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                "Не удалось получить активность по дням."
+            ) from error
+
+        return [(str(row[0]), int(row[1])) for row in rows]
+
     async def _get_user_items(
         self, table: Table, item_column: str, telegram_id: int
     ) -> set[str]:
@@ -449,6 +578,7 @@ class SQLiteHistoryStorage:
         """сохраняет значение в таблицу истории"""
         statement = insert(table).values(
             telegram_id=telegram_id,
+            issued_at=_now_iso(),
             **{item_column: item_id},
         )
         try:

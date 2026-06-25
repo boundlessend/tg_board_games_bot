@@ -14,7 +14,7 @@ from aiogram import Dispatcher  # noqa: E402
 
 import keyboards  # noqa: E402
 from config import _parse_admin_ids, _resolve_database_path  # noqa: E402
-from database import SQLiteHistoryStorage  # noqa: E402
+from database import SQLiteHistoryStorage, iso_days_ago  # noqa: E402
 from handlers.admin import (  # noqa: E402
     _build_statistics_csv,
     _build_summary,
@@ -144,9 +144,15 @@ async def _exercise_storage() -> None:
     await storage.save_user_word(1, "альфа")
     await storage.save_user_word(2, "альфа")
     statistics = await storage.get_all_user_statistics()
-    assert "альфа x2" in _build_summary(statistics)
+    assert "альфа x2" in _build_summary(statistics, 0, 0)
     csv_text = _build_statistics_csv(statistics)
     assert csv_text.splitlines()[0] == "telegram_id,words,curses,bosses"
+
+    assert await storage.count_issuances_since(iso_days_ago(1)) > 0
+    assert await storage.count_active_users_since(iso_days_ago(1)) > 0
+    by_day = await storage.issuances_by_day(iso_days_ago(1))
+    assert by_day and by_day[-1][1] > 0
+    assert await storage.count_issuances_since("9999-01-01T00:00:00+00:00") == 0
 
     dispatcher = Dispatcher()
     dispatcher.include_router(create_start_router(games))

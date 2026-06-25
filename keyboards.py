@@ -1,11 +1,13 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from constants import (
+    ADMIN_ACTIVITY_TITLE,
     ADMIN_CLOSE_TITLE,
     ADMIN_CSV_TITLE,
     ADMIN_STATS_TITLE,
     BACK_TO_DANGEROUS_WORDS_TITLE,
     BACK_TO_MAIN_MENU_TITLE,
+    CB_ADMIN_ACTIVITY,
     CB_ADMIN_CLOSE,
     CB_ADMIN_CSV,
     CB_ADMIN_STATS,
@@ -199,6 +201,11 @@ def create_admin_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text=ADMIN_CSV_TITLE, callback_data=CB_ADMIN_CSV
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=ADMIN_ACTIVITY_TITLE, callback_data=CB_ADMIN_ACTIVITY
                 )
             ],
             [

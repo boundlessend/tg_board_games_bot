@@ -9,6 +9,7 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from constants import (
     BOSSES_HISTORY_KEY,
     BOSSES_LIMIT,
+    CB_ADMIN_ACTIVITY,
     CB_ADMIN_CLOSE,
     CB_ADMIN_CSV,
     CB_ADMIN_STATS,
@@ -18,7 +19,7 @@ from constants import (
     WORDS_HISTORY_KEY,
     WORDS_LIMIT,
 )
-from database import DatabaseError, SQLiteHistoryStorage
+from database import DatabaseError, SQLiteHistoryStorage, iso_days_ago
 from keyboards import create_admin_keyboard, create_main_menu_keyboard
 from services.random_generator import (
     Boss,
@@ -95,6 +96,37 @@ def create_admin_router(
         await message.answer_document(document, caption="Статистика CSV")
         await callback.answer()
 
+    @router.callback_query(F.data == CB_ADMIN_ACTIVITY)
+    async def handle_admin_activity(callback: CallbackQuery) -> None:
+        if not _is_authorized_admin_callback(callback, admin_ids):
+            await callback.answer()
+            return
+
+        message = callback.message
+        if not isinstance(message, Message):
+            await callback.answer()
+            return
+
+        try:
+            by_day = await storage.issuances_by_day(iso_days_ago(14))
+        except DatabaseError:
+            logger.exception(
+                "database_error",
+                extra={
+                    "telegram_id": callback.from_user.id,
+                    "action": "admin_activity",
+                },
+            )
+            await callback.answer(
+                "Не удалось получить активность.", show_alert=True
+            )
+            return
+
+        await message.answer(
+            _format_activity(by_day), reply_markup=create_admin_keyboard()
+        )
+        await callback.answer()
+
     @router.callback_query(F.data == CB_ADMIN_CLOSE)
     async def handle_admin_close(callback: CallbackQuery) -> None:
         if not _is_authorized_admin_callback(callback, admin_ids):
@@ -151,6 +183,8 @@ async def _send_summary(
     """отправляет администратору сводку по всем пользователям"""
     try:
         statistics = await storage.get_all_user_statistics()
+        recent_issuances = await storage.count_issuances_since(iso_days_ago(7))
+        recent_users = await storage.count_active_users_since(iso_days_ago(7))
     except DatabaseError:
         logger.exception(
             "database_error",
@@ -160,11 +194,16 @@ async def _send_summary(
         return
 
     await message.answer(
-        _build_summary(statistics), reply_markup=create_admin_keyboard()
+        _build_summary(statistics, recent_issuances, recent_users),
+        reply_markup=create_admin_keyboard(),
     )
 
 
-def _build_summary(statistics: dict[int, dict[str, list[str]]]) -> str:
+def _build_summary(
+    statistics: dict[int, dict[str, list[str]]],
+    recent_issuances: int,
+    recent_users: int,
+) -> str:
     """собирает сводку по всем пользователям"""
     if len(statistics) == 0:
         return "Статистика пока пустая."
@@ -192,10 +231,21 @@ def _build_summary(statistics: dict[int, dict[str, list[str]]]) -> str:
         f"Слов выдано: {total_words}",
         f"Проклятий выдано: {total_curses}",
         f"Боссов выдано: {total_bosses}",
+        f"Выдач за 7 дней: {recent_issuances}",
+        f"Активных за 7 дней: {recent_users}",
         "Топ-10 слов:",
         _format_values(top_words),
     ]
     return "\n\n".join(sections)
+
+
+def _format_activity(by_day: list[tuple[str, int]]) -> str:
+    """форматирует активность по дням для админского отчёта"""
+    if len(by_day) == 0:
+        return "Активности за период нет."
+    lines = ["Выдачи по дням (14 дней):"]
+    lines.extend(f"{day}: {count}" for day, count in by_day)
+    return "\n".join(lines)
 
 
 def _build_statistics_csv(

@@ -1,3 +1,4 @@
+ADMIN_ACTIVITY_TITLE = "Активность"
 ADMIN_CLOSE_TITLE = "Закрыть админку"
 ADMIN_CSV_TITLE = "Выгрузить CSV"
 ADMIN_STATS_TITLE = "Полный отчёт"
@@ -17,6 +18,7 @@ RESET_WORDS_TITLE = "Сбросить слова"
 CB_MAIN_MENU = "menu:main"
 CB_DW_NEW_GAME = "dw:new_game"
 CB_ADMIN_CSV = "admin:csv"
+CB_ADMIN_ACTIVITY = "admin:activity"
 
 CB_WG_OPEN_PREFIX = "wg:open:"
 CB_WG_WORD_PREFIX = "wg:word:"
