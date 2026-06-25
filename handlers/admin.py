@@ -1,14 +1,17 @@
 import logging
+from collections import Counter
 
 from aiogram import F, Router
-from aiogram.types import Message
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from constants import (
-    ADMIN_CLOSE_TITLE,
-    ADMIN_SECRET_PHRASE,
-    ADMIN_STATS_TITLE,
     BOSSES_HISTORY_KEY,
     BOSSES_LIMIT,
+    CB_ADMIN_CLOSE,
+    CB_ADMIN_CSV,
+    CB_ADMIN_STATS,
     CURSES_HISTORY_KEY,
     CURSES_LIMIT,
     TELEGRAM_MESSAGE_LIMIT,
@@ -17,52 +20,97 @@ from constants import (
 )
 from database import DatabaseError, SQLiteHistoryStorage
 from keyboards import create_admin_keyboard, create_main_menu_keyboard
-from services.random_generator import Boss, Curse, DangerousWordsContent
+from services.random_generator import (
+    Boss,
+    Curse,
+    DangerousWordsContent,
+    WordGame,
+)
 
 logger = logging.getLogger(__name__)
 
+ADMIN_CLOSED_TEXT = "Админка закрыта"
+
 
 def create_admin_router(
-    content: DangerousWordsContent, storage: SQLiteHistoryStorage
+    content: DangerousWordsContent,
+    storage: SQLiteHistoryStorage,
+    admin_ids: frozenset[int],
+    word_games: list[WordGame],
 ) -> Router:
-    """создаёт роутер секретного админ-меню"""
+    """создаёт роутер админ-меню с доступом по telegram id"""
     router = Router()
-    admin_ids: set[int] = set()
 
-    @router.message(F.text == ADMIN_SECRET_PHRASE)
-    async def handle_admin_secret(message: Message) -> None:
-        if not _is_private_chat(message):
+    @router.message(Command("admin"))
+    async def handle_admin_open(message: Message) -> None:
+        if not _is_authorized_admin_message(message, admin_ids):
             return
 
-        telegram_id = _extract_telegram_id(message)
-        admin_ids.add(telegram_id)
-        await message.answer(
-            "В админку войдено", reply_markup=create_admin_keyboard()
+        admin_id = _extract_telegram_id(message)
+        await _send_summary(message, storage, admin_id)
+
+    @router.callback_query(F.data == CB_ADMIN_STATS)
+    async def handle_admin_stats_request(callback: CallbackQuery) -> None:
+        if not _is_authorized_admin_callback(callback, admin_ids):
+            await callback.answer()
+            return
+
+        message = callback.message
+        if isinstance(message, Message):
+            await _send_all_statistics(
+                message, content, storage, callback.from_user.id
+            )
+        await callback.answer()
+
+    @router.callback_query(F.data == CB_ADMIN_CSV)
+    async def handle_admin_csv(callback: CallbackQuery) -> None:
+        if not _is_authorized_admin_callback(callback, admin_ids):
+            await callback.answer()
+            return
+
+        message = callback.message
+        if not isinstance(message, Message):
+            await callback.answer()
+            return
+
+        try:
+            statistics = await storage.get_all_user_statistics()
+        except DatabaseError:
+            logger.exception(
+                "database_error",
+                extra={
+                    "telegram_id": callback.from_user.id,
+                    "action": "admin_csv",
+                },
+            )
+            await callback.answer(
+                "Не удалось получить статистику.", show_alert=True
+            )
+            return
+
+        document = BufferedInputFile(
+            _build_statistics_csv(statistics).encode("utf-8"),
+            filename="stats.csv",
         )
-        await _send_all_statistics(message, content, storage)
+        await message.answer_document(document, caption="Статистика CSV")
+        await callback.answer()
 
-    @router.message(F.text == ADMIN_CLOSE_TITLE)
-    async def handle_admin_close(message: Message) -> None:
-        if not _is_private_chat(message):
+    @router.callback_query(F.data == CB_ADMIN_CLOSE)
+    async def handle_admin_close(callback: CallbackQuery) -> None:
+        if not _is_authorized_admin_callback(callback, admin_ids):
+            await callback.answer()
             return
 
-        telegram_id = _extract_telegram_id(message)
-        admin_ids.discard(telegram_id)
-        await message.answer(
-            "Из админки выйдено", reply_markup=create_main_menu_keyboard()
-        )
-
-    @router.message(F.text == ADMIN_STATS_TITLE)
-    async def handle_admin_stats_request(message: Message) -> None:
-        if not _is_private_chat(message):
-            return
-
-        telegram_id = _extract_telegram_id(message)
-        if telegram_id not in admin_ids:
-            await message.answer("Выберите действие с помощью кнопок меню.")
-            return
-
-        await _send_all_statistics(message, content, storage)
+        message = callback.message
+        if isinstance(message, Message):
+            try:
+                await message.edit_text(
+                    ADMIN_CLOSED_TEXT,
+                    reply_markup=create_main_menu_keyboard(word_games),
+                )
+            except TelegramBadRequest:
+                pass
+        await callback.answer()
 
     return router
 
@@ -74,31 +122,122 @@ def _extract_telegram_id(message: Message) -> int:
     return message.from_user.id
 
 
-def _is_private_chat(message: Message) -> bool:
-    """проверяет что сообщение пришло из личного чата"""
-    return message.chat.type == "private"
+def _is_authorized_admin_message(
+    message: Message, admin_ids: frozenset[int]
+) -> bool:
+    """проверяет что сообщение от администратора из личного чата"""
+    if message.chat.type != "private":
+        return False
+    if message.from_user is None:
+        return False
+    return message.from_user.id in admin_ids
+
+
+def _is_authorized_admin_callback(
+    callback: CallbackQuery, admin_ids: frozenset[int]
+) -> bool:
+    """проверяет что callback от администратора из личного чата"""
+    message = callback.message
+    if message is None or message.chat.type != "private":
+        return False
+    return callback.from_user.id in admin_ids
+
+
+async def _send_summary(
+    message: Message,
+    storage: SQLiteHistoryStorage,
+    admin_id: int,
+) -> None:
+    """отправляет администратору сводку по всем пользователям"""
+    try:
+        statistics = await storage.get_all_user_statistics()
+    except DatabaseError:
+        logger.exception(
+            "database_error",
+            extra={"telegram_id": admin_id, "action": "admin_summary"},
+        )
+        await message.answer("Не удалось получить статистику.")
+        return
+
+    await message.answer(
+        _build_summary(statistics), reply_markup=create_admin_keyboard()
+    )
+
+
+def _build_summary(statistics: dict[int, dict[str, list[str]]]) -> str:
+    """собирает сводку по всем пользователям"""
+    if len(statistics) == 0:
+        return "Статистика пока пустая."
+
+    total_words = sum(
+        len(user[WORDS_HISTORY_KEY]) for user in statistics.values()
+    )
+    total_curses = sum(
+        len(user[CURSES_HISTORY_KEY]) for user in statistics.values()
+    )
+    total_bosses = sum(
+        len(user[BOSSES_HISTORY_KEY]) for user in statistics.values()
+    )
+
+    word_counter: Counter[str] = Counter()
+    for user in statistics.values():
+        word_counter.update(user[WORDS_HISTORY_KEY])
+    top_words = [
+        f"{word} x{count}" for word, count in word_counter.most_common(10)
+    ]
+
+    sections = [
+        "Сводка",
+        f"Пользователей: {len(statistics)}",
+        f"Слов выдано: {total_words}",
+        f"Проклятий выдано: {total_curses}",
+        f"Боссов выдано: {total_bosses}",
+        "Топ-10 слов:",
+        _format_values(top_words),
+    ]
+    return "\n\n".join(sections)
+
+
+def _build_statistics_csv(
+    statistics: dict[int, dict[str, list[str]]],
+) -> str:
+    """собирает csv со сводкой выдач по каждому пользователю"""
+    lines = ["telegram_id,words,curses,bosses"]
+    for telegram_id, user in statistics.items():
+        lines.append(
+            f"{telegram_id},"
+            f"{len(user[WORDS_HISTORY_KEY])},"
+            f"{len(user[CURSES_HISTORY_KEY])},"
+            f"{len(user[BOSSES_HISTORY_KEY])}"
+        )
+    return "\n".join(lines) + "\n"
 
 
 async def _send_all_statistics(
     message: Message,
     content: DangerousWordsContent,
     storage: SQLiteHistoryStorage,
+    admin_id: int,
 ) -> None:
     """отправляет администратору статистику по всем пользователям"""
-    telegram_id = _extract_telegram_id(message)
     try:
         statistics = await storage.get_all_user_statistics()
     except DatabaseError:
         logger.exception(
             "database_error",
-            extra={"telegram_id": telegram_id, "action": "admin_all_stats"},
+            extra={"telegram_id": admin_id, "action": "admin_all_stats"},
         )
         await message.answer("Не удалось получить статистику.")
         return
 
     report = _build_all_statistics_report(content, statistics)
-    for chunk in _split_report(report):
-        await message.answer(chunk, reply_markup=create_admin_keyboard())
+    chunks = _split_report(report)
+    for index, chunk in enumerate(chunks):
+        is_last_chunk = index == len(chunks) - 1
+        await message.answer(
+            chunk,
+            reply_markup=create_admin_keyboard() if is_last_chunk else None,
+        )
 
 
 def _build_all_statistics_report(
@@ -158,13 +297,13 @@ def _create_boss_names_map(bosses: list[Boss]) -> dict[str, str]:
 def _format_curse(curse_id: str, curse_titles: dict[str, str]) -> str:
     """форматирует проклятье для админского отчёта"""
     title = curse_titles.get(curse_id, "неизвестное проклятье")
-    return f"{curse_id} — {title}"
+    return f"{curse_id} - {title}"
 
 
 def _format_boss(boss_id: str, boss_names: dict[str, str]) -> str:
     """форматирует босса для админского отчёта"""
     name = boss_names.get(boss_id, "неизвестный босс")
-    return f"{boss_id} — {name}"
+    return f"{boss_id} - {name}"
 
 
 def _format_values(values: list[str]) -> str:
