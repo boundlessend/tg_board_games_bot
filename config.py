@@ -18,6 +18,7 @@ class BotConfig:
     bot_token: str
     database_path: Path
     data_dir: Path
+    admin_ids: frozenset[int]
 
 
 def load_config() -> BotConfig:
@@ -33,6 +34,38 @@ def load_config() -> BotConfig:
 
     return BotConfig(
         bot_token=bot_token.strip(),
-        database_path=project_dir / "bot.sqlite3",
+        database_path=_resolve_database_path(
+            os.getenv("DATABASE_PATH"), project_dir
+        ),
         data_dir=project_dir / "data",
+        admin_ids=_parse_admin_ids(os.getenv("ADMIN_IDS")),
     )
+
+
+def _resolve_database_path(
+    raw_database_path: str | None, project_dir: Path
+) -> Path:
+    """определяет путь к файлу базы из окружения или по умолчанию"""
+    if raw_database_path is None or raw_database_path.strip() == "":
+        return project_dir / "bot.sqlite3"
+    return Path(raw_database_path.strip())
+
+
+def _parse_admin_ids(raw_admin_ids: str | None) -> frozenset[int]:
+    """разбирает список telegram id администраторов из строки окружения"""
+    if raw_admin_ids is None or raw_admin_ids.strip() == "":
+        return frozenset()
+
+    admin_ids: set[int] = set()
+    for chunk in raw_admin_ids.split(","):
+        value = chunk.strip()
+        if value == "":
+            continue
+        try:
+            admin_ids.add(int(value))
+        except ValueError as error:
+            raise ConfigError(
+                f"ADMIN_IDS содержит нечисловое значение: {value!r}."
+            ) from error
+
+    return frozenset(admin_ids)
