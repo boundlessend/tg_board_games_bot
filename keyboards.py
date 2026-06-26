@@ -5,7 +5,6 @@ from constants import (
     ADMIN_CLOSE_TITLE,
     ADMIN_CSV_TITLE,
     ADMIN_STATS_TITLE,
-    BACK_TO_DANGEROUS_WORDS_TITLE,
     BACK_TO_MAIN_MENU_TITLE,
     BUNKER_CANCEL_TITLE,
     BUNKER_GAME_TITLE,
@@ -45,16 +44,6 @@ from constants import (
     CB_DG_NEXT,
     CB_DG_OPEN,
     CB_DG_WORD,
-    CB_DW_BOSS,
-    CB_DW_CURSE,
-    CB_DW_HOST,
-    CB_DW_PLAYER,
-    CB_DW_NEW_GAME,
-    CB_DW_RESET_BOSSES,
-    CB_DW_RESET_CURSES,
-    CB_DW_RESET_WORDS,
-    CB_DW_ROLES,
-    CB_DW_WORD,
     CB_GS_CANCEL,
     CB_GS_FINISH,
     CB_GS_JOIN_PREFIX,
@@ -72,12 +61,7 @@ from constants import (
     CB_WG_OPEN_PREFIX,
     CB_WG_RESET_PREFIX,
     CB_WG_WORD_PREFIX,
-    CREATE_BOSS_TITLE,
-    CREATE_CURSE_TITLE,
-    CREATE_WORD_TITLE,
     DANGEROUS_WORDS_GAME_TITLE,
-    DANGEROUS_WORDS_HOST_TITLE,
-    DANGEROUS_WORDS_PLAYER_TITLE,
     DG_BOSS_TITLE,
     DG_CURSE_TITLE,
     DG_EXPLAIN_TITLE,
@@ -86,10 +70,6 @@ from constants import (
     DG_WORD_TITLE,
     MAX_TEAMS,
     MIN_TEAMS,
-    NEW_GAME_TITLE,
-    RESET_BOSSES_TITLE,
-    RESET_CURSES_TITLE,
-    RESET_WORDS_TITLE,
     SESSION_CANCEL_TITLE,
     SESSION_FINISH_TITLE,
     SESSION_NEXT_TITLE,
@@ -228,106 +208,6 @@ def create_word_game_keyboard(game_id: str) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text=BACK_TO_MAIN_MENU_TITLE, callback_data=CB_MAIN_MENU
-                )
-            ],
-        ]
-    )
-
-
-def create_dangerous_words_role_keyboard() -> InlineKeyboardMarkup:
-    """создаёт inline-клавиатуру выбора роли в помощнике опасные слова"""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=DANGEROUS_WORDS_HOST_TITLE, callback_data=CB_DW_HOST
-                ),
-                InlineKeyboardButton(
-                    text=DANGEROUS_WORDS_PLAYER_TITLE,
-                    callback_data=CB_DW_PLAYER,
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text=BACK_TO_MAIN_MENU_TITLE, callback_data=CB_MAIN_MENU
-                )
-            ],
-        ]
-    )
-
-
-def create_dangerous_words_host_keyboard() -> InlineKeyboardMarkup:
-    """создаёт inline-клавиатуру ведущего в помощнике опасные слова"""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=CREATE_WORD_TITLE, callback_data=CB_DW_WORD
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=RESET_WORDS_TITLE, callback_data=CB_DW_RESET_WORDS
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=CREATE_CURSE_TITLE, callback_data=CB_DW_CURSE
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=RESET_CURSES_TITLE, callback_data=CB_DW_RESET_CURSES
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=CREATE_BOSS_TITLE, callback_data=CB_DW_BOSS
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=RESET_BOSSES_TITLE, callback_data=CB_DW_RESET_BOSSES
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=NEW_GAME_TITLE, callback_data=CB_DW_NEW_GAME
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=BACK_TO_DANGEROUS_WORDS_TITLE,
-                    callback_data=CB_DW_ROLES,
-                )
-            ],
-        ]
-    )
-
-
-def create_dangerous_words_player_keyboard() -> InlineKeyboardMarkup:
-    """создаёт inline-клавиатуру игрока в помощнике опасные слова"""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=CREATE_WORD_TITLE, callback_data=CB_DW_WORD
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=RESET_WORDS_TITLE, callback_data=CB_DW_RESET_WORDS
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=NEW_GAME_TITLE, callback_data=CB_DW_NEW_GAME
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=BACK_TO_DANGEROUS_WORDS_TITLE,
-                    callback_data=CB_DW_ROLES,
                 )
             ],
         ]

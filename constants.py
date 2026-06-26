@@ -2,22 +2,11 @@ ADMIN_ACTIVITY_TITLE = "Активность"
 ADMIN_CLOSE_TITLE = "Закрыть админку"
 ADMIN_CSV_TITLE = "Выгрузить CSV"
 ADMIN_STATS_TITLE = "Полный отчёт"
-BACK_TO_DANGEROUS_WORDS_TITLE = "Назад к выбору роли"
 BACK_TO_MAIN_MENU_TITLE = "Назад в главное меню"
-CREATE_BOSS_TITLE = "Получить нового босса"
-CREATE_CURSE_TITLE = "Получить новое проклятье"
-CREATE_WORD_TITLE = "Получить новое слово"
 DANGEROUS_WORDS_GAME_TITLE = "Опасные слова"
-DANGEROUS_WORDS_HOST_TITLE = "Я ведущий"
-DANGEROUS_WORDS_PLAYER_TITLE = "Я игрок"
-NEW_GAME_TITLE = "Новая игра (сбросить всё)"
 SETTINGS_TITLE = "Настройки"
-RESET_BOSSES_TITLE = "Сбросить боссов"
-RESET_CURSES_TITLE = "Сбросить проклятья"
-RESET_WORDS_TITLE = "Сбросить слова"
 
 CB_MAIN_MENU = "menu:main"
-CB_DW_NEW_GAME = "dw:new_game"
 CB_ADMIN_CSV = "admin:csv"
 CB_ADMIN_ACTIVITY = "admin:activity"
 
@@ -103,15 +92,6 @@ BUNKER_CARD_LABELS: dict[str, str] = {
     "fact": "Факт",
     "special_condition": "Особое условие",
 }
-CB_DW_ROLES = "dw:roles"
-CB_DW_HOST = "dw:host"
-CB_DW_PLAYER = "dw:player"
-CB_DW_WORD = "dw:word"
-CB_DW_RESET_WORDS = "dw:reset_words"
-CB_DW_CURSE = "dw:curse"
-CB_DW_RESET_CURSES = "dw:reset_curses"
-CB_DW_BOSS = "dw:boss"
-CB_DW_RESET_BOSSES = "dw:reset_bosses"
 CB_ADMIN_STATS = "admin:stats"
 CB_ADMIN_CLOSE = "admin:close"
 

@@ -2,7 +2,7 @@ import logging
 import random
 from dataclasses import dataclass, field
 
-from aiogram import Bot, F, Router
+from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import CallbackQuery, Message
 
@@ -113,8 +113,13 @@ def create_dangerous_group_router(
 
         word = _pick(pool, session.issued_words)
         recipients = {session.explainer_id, callback.from_user.id}
-        unreachable = await _send_word(bot, recipients, word)
-        if unreachable:
+        delivered = True
+        for user_id in recipients:
+            try:
+                await bot.send_message(user_id, f"Слово: {word}")
+            except TelegramForbiddenError:
+                delivered = False
+        if not delivered:
             await callback.answer(
                 "Кому-то не дошло: нужен /start в личке с ботом.",
                 show_alert=True,
@@ -213,19 +218,6 @@ def create_dangerous_group_router(
         await callback.answer()
 
     return router
-
-
-async def _send_word(
-    bot: Bot, recipients: set[int], word: str
-) -> list[int]:
-    """шлёт слово получателям в ЛС, возвращает тех, кому не дошло"""
-    unreachable: list[int] = []
-    for user_id in recipients:
-        try:
-            await bot.send_message(user_id, f"Слово: {word}")
-        except TelegramForbiddenError:
-            unreachable.append(user_id)
-    return unreachable
 
 
 def _lookup(

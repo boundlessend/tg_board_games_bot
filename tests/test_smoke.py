@@ -58,7 +58,6 @@ from handlers.dangerous_group import (  # noqa: E402
     _render_board as _render_dg_board,
     create_dangerous_group_router,
 )
-from handlers.dangerous_words import create_dangerous_words_router  # noqa: E402
 from handlers.favorites import create_favorites_router  # noqa: E402
 from handlers.group_session import (  # noqa: E402
     GroupSession,
@@ -263,7 +262,6 @@ async def _exercise_storage() -> None:
     dispatcher.include_router(create_group_session_router(games, storage))
     dispatcher.include_router(create_bunker_router(load_bunker_content(DATA_DIR)))
     dispatcher.include_router(create_dangerous_group_router(content, storage))
-    dispatcher.include_router(create_dangerous_words_router(content, storage))
 
     private_menu = keyboards.create_private_menu_keyboard(games)
     private_labels = [
