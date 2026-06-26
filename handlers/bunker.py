@@ -12,11 +12,15 @@ from constants import (
     BUNKER_CARD_LABELS,
     CB_BK_CANCEL,
     CB_BK_JOIN,
+    CB_BK_MODE,
     CB_BK_NEXT,
     CB_BK_REVEAL,
     CB_BK_SOLO_CANCEL,
     CB_BK_SOLO_START,
     CB_BK_START,
+    CB_BK_STORY_NO,
+    CB_BK_STORY_TALLY,
+    CB_BK_STORY_YES,
     CB_BK_VOTE_PREFIX,
     CB_BK_VOTE_START,
     CB_BK_VOTE_TALLY,
@@ -25,6 +29,7 @@ from keyboards import (
     create_bunker_lobby_keyboard,
     create_bunker_reveal_keyboard,
     create_bunker_solo_lobby_keyboard,
+    create_bunker_story_keyboard,
     create_bunker_vote_keyboard,
 )
 from services.bunker import (
@@ -46,6 +51,15 @@ logger = logging.getLogger(__name__)
 ROUNDS_TOTAL = 5
 
 
+@dataclass(frozen=True)
+class Challenge:
+    """испытание финала «история выживания»"""
+
+    group: str
+    kind: str
+    text: str
+
+
 @dataclass
 class BunkerSession:
     """состояние партии в бункер в одном чате"""
@@ -54,6 +68,7 @@ class BunkerSession:
     board_chat_id: int
     phase: str = "lobby"
     board_message_id: int | None = None
+    story_mode: bool = False
     catastrophe: str = ""
     pairs: list[tuple[str, str]] = field(default_factory=list)
     plan: RoundsPlan | None = None
@@ -67,6 +82,11 @@ class BunkerSession:
     excluded: set[int] = field(default_factory=set)
     votes: dict[int, int] = field(default_factory=dict)
     vote_candidates: list[int] = field(default_factory=list)
+    survivors_bunker: list[int] = field(default_factory=list)
+    survivors_exiles: list[int] = field(default_factory=list)
+    finale_queue: list[Challenge] = field(default_factory=list)
+    finale_index: int = 0
+    story_votes: dict[int, bool] = field(default_factory=dict)
 
 
 @dataclass
@@ -137,6 +157,20 @@ def create_bunker_router(content: BunkerContent) -> Router:
         session.players[callback.from_user.id] = callback.from_user.full_name
         await _show_board(callback, session, False)
         await callback.answer("Ты в убежище.")
+
+    @router.callback_query(F.data == CB_BK_MODE)
+    async def handle_mode(callback: CallbackQuery) -> None:
+        """переключает режим партии в лобби (создатель)"""
+        session = sessions.get(_chat_id(callback))
+        if session is None or session.phase != "lobby":
+            await callback.answer()
+            return
+        if callback.from_user.id != session.host_id:
+            await callback.answer("Режим меняет создатель.", show_alert=True)
+            return
+        session.story_mode = not session.story_mode
+        await _show_board(callback, session, False)
+        await callback.answer()
 
     @router.callback_query(F.data == CB_BK_START)
     async def handle_start(callback: CallbackQuery) -> None:
@@ -415,6 +449,38 @@ def create_bunker_router(content: BunkerContent) -> Router:
         await _replace_board(callback, "Лобби бункера закрыто.")
         await callback.answer()
 
+    @router.callback_query(F.data.in_({CB_BK_STORY_YES, CB_BK_STORY_NO}))
+    async def handle_story_vote(callback: CallbackQuery) -> None:
+        """принимает голос «справились / не справились» в финале"""
+        session = sessions.get(_chat_id(callback))
+        if session is None or session.phase != "story":
+            await callback.answer()
+            return
+        if callback.from_user.id not in session.players:
+            await callback.answer("Голосуют только участники.", show_alert=True)
+            return
+        session.story_votes[callback.from_user.id] = callback.data == CB_BK_STORY_YES
+        if len(session.story_votes) >= len(session.players):
+            await _resolve_challenge(callback, session)
+        else:
+            await _show_board(callback, session, False)
+            await callback.answer("Голос учтён.")
+
+    @router.callback_query(F.data == CB_BK_STORY_TALLY)
+    async def handle_story_tally(callback: CallbackQuery) -> None:
+        """создатель досрочно подводит итог испытания финала"""
+        session = sessions.get(_chat_id(callback))
+        if session is None or session.phase != "story":
+            await callback.answer()
+            return
+        if callback.from_user.id != session.host_id:
+            await callback.answer("Итог подводит создатель.", show_alert=True)
+            return
+        if len(session.story_votes) == 0:
+            await callback.answer("Ещё никто не проголосовал.", show_alert=True)
+            return
+        await _resolve_challenge(callback, session)
+
     async def _close_vote(callback: CallbackQuery, session: BunkerSession) -> None:
         """подводит итог голосования: изгоняет или назначает переголосование"""
         leaders, _ = vote_leaders(session.votes)
@@ -464,12 +530,86 @@ def create_bunker_router(content: BunkerContent) -> Router:
             )
 
     async def _finale(callback: CallbackQuery, session: BunkerSession) -> None:
-        """завершает базовый режим: объявляет состав бункера"""
+        """завершает партию: базовый итог либо история выживания"""
+        if session.story_mode:
+            await _start_story(callback, session)
+            return
         bot = callback.bot
         if bot is not None:
             await bot.send_message(session.board_chat_id, _render_finale(session))
         sessions.pop(session.board_chat_id, None)
         await _replace_board(callback, "Бункер закрыт. Игра окончена.")
+        await callback.answer()
+
+    async def _start_story(
+        callback: CallbackQuery, session: BunkerSession
+    ) -> None:
+        """запускает развязку «история выживания»"""
+        session.survivors_bunker = _alive(session)
+        session.survivors_exiles = list(session.excluded)
+        session.finale_queue = _build_finale_queue(session, content)
+        session.finale_index = 0
+        bot = callback.bot
+        if bot is not None:
+            await bot.send_message(
+                session.board_chat_id, _render_story_start(session)
+            )
+        await _present_challenge(callback, session)
+
+    async def _present_challenge(
+        callback: CallbackQuery, session: BunkerSession
+    ) -> None:
+        """показывает следующее испытание или подводит итог истории"""
+        while session.finale_index < len(session.finale_queue):
+            if _challenge_survivors(
+                session, session.finale_queue[session.finale_index]
+            ):
+                break
+            session.finale_index += 1
+        if session.finale_index >= len(session.finale_queue):
+            await _story_verdict(callback, session)
+            return
+        session.phase = "story"
+        session.story_votes = {}
+        bot = callback.bot
+        if bot is not None:
+            await bot.send_message(
+                session.board_chat_id, _render_challenge(session)
+            )
+        await _show_board(callback, session, True)
+        await callback.answer()
+
+    async def _resolve_challenge(
+        callback: CallbackQuery, session: BunkerSession
+    ) -> None:
+        """разыгрывает итог испытания: успех либо случайная потеря"""
+        challenge = session.finale_queue[session.finale_index]
+        yes = sum(1 for survived in session.story_votes.values() if survived)
+        survived = yes * 2 >= len(session.players)
+        bot = callback.bot
+        if bot is not None:
+            await bot.send_message(
+                session.board_chat_id,
+                _render_outcome(challenge, survived),
+            )
+        if not survived:
+            casualty = _apply_casualty(session, challenge)
+            if bot is not None:
+                await bot.send_message(session.board_chat_id, casualty)
+        session.finale_index += 1
+        await _present_challenge(callback, session)
+
+    async def _story_verdict(
+        callback: CallbackQuery, session: BunkerSession
+    ) -> None:
+        """объявляет, кто пережил историю выживания"""
+        bot = callback.bot
+        if bot is not None:
+            await bot.send_message(
+                session.board_chat_id, _render_story_verdict(session)
+            )
+        sessions.pop(session.board_chat_id, None)
+        await _replace_board(callback, "История выживания завершена.")
         await callback.answer()
 
     return router
@@ -553,13 +693,17 @@ def _board_keyboard(session: BunkerSession) -> InlineKeyboardMarkup:
         return create_bunker_vote_keyboard(candidates)
     if session.phase == "reveal":
         return create_bunker_reveal_keyboard(session.votes_pending > 0)
-    return create_bunker_lobby_keyboard()
+    if session.phase == "story":
+        return create_bunker_story_keyboard()
+    return create_bunker_lobby_keyboard(session.story_mode)
 
 
 def _render_board(session: BunkerSession) -> str:
     """отображает табло партии под текущую фазу"""
     if session.phase == "lobby":
         return _render_lobby(session)
+    if session.phase == "story":
+        return _render_story_board(session)
 
     plan = session.plan
     seats = plan.seats if plan else 0
@@ -600,7 +744,13 @@ def _render_board(session: BunkerSession) -> str:
 
 def _render_lobby(session: BunkerSession) -> str:
     """отображает лобби сбора игроков"""
-    lines = ["🏚 Бункер. Сбор в убежище.", "", "Игроки:"]
+    mode = "история выживания" if session.story_mode else "базовый"
+    lines = [
+        "🏚 Бункер. Сбор в убежище.",
+        f"Режим: {mode}.",
+        "",
+        "Игроки:",
+    ]
     if session.players:
         lines.extend(f"- {name}" for name in session.players.values())
     else:
@@ -620,11 +770,12 @@ def _render_intro(session: BunkerSession) -> str:
     plan = session.plan
     seats = plan.seats if plan else 0
     exclusions = plan.exclusions if plan else 0
+    mode = "история выживания" if session.story_mode else "базовый"
     return (
         "☢️ КАТАСТРОФА\n"
         f"{session.catastrophe}\n\n"
-        f"Игроков: {len(session.players)}. Мест в бункере: {seats}. "
-        f"Будет изгнано: {exclusions}.\n"
+        f"Режим: {mode}. Игроков: {len(session.players)}. "
+        f"Мест в бункере: {seats}. Будет изгнано: {exclusions}.\n"
         "Карты персонажа разосланы в личку. Особое условие можно разыграть "
         "голосом в любой момент.\n\n"
         f"{_render_pair(session, 1)}"
@@ -688,6 +839,141 @@ def _render_finale(session: BunkerSession) -> str:
     if excluded_names:
         lines.extend(["", "Снаружи остались: " + ", ".join(excluded_names)])
     return "\n".join(lines)
+
+
+def _build_finale_queue(
+    session: BunkerSession, content: BunkerContent
+) -> list[Challenge]:
+    """собирает очередь испытаний финала «история выживания»"""
+    queue: list[Challenge] = []
+    if session.survivors_bunker:
+        threat = random.choice([threat for _, threat in session.pairs])
+        queue.append(Challenge(group="bunker", kind="threat", text=threat))
+    if session.survivors_exiles:
+        for threat in random.sample(content.threats, 2):
+            queue.append(Challenge(group="exiles", kind="threat", text=threat))
+    queue.append(
+        Challenge(group="all", kind="catastrophe", text=session.catastrophe)
+    )
+    return queue
+
+
+def _challenge_survivors(
+    session: BunkerSession, challenge: Challenge
+) -> list[int]:
+    """возвращает живых членов группы данного испытания"""
+    if challenge.group == "bunker":
+        return session.survivors_bunker
+    if challenge.group == "exiles":
+        return session.survivors_exiles
+    return _story_survivors(session)
+
+
+def _story_survivors(session: BunkerSession) -> list[int]:
+    """возвращает всех выживших обеих групп"""
+    return session.survivors_bunker + session.survivors_exiles
+
+
+def _apply_casualty(session: BunkerSession, challenge: Challenge) -> str:
+    """разыгрывает потерю при провале испытания и описывает её"""
+    if challenge.kind == "catastrophe":
+        victims = _story_survivors(session)
+        session.survivors_bunker = []
+        session.survivors_exiles = []
+        names = ", ".join(session.players[pid] for pid in victims)
+        return f"☢️ Катастрофа сильнее. Погибли все: {names}."
+
+    is_bunker = challenge.group == "bunker"
+    group = (
+        session.survivors_bunker if is_bunker else session.survivors_exiles
+    )
+    # 0 - маркер карты угрозы; id игрока в telegram всегда положительный
+    pick = random.choice([*group, 0])
+    if pick == 0:
+        names = ", ".join(session.players[pid] for pid in group)
+        if is_bunker:
+            session.survivors_bunker = []
+        else:
+            session.survivors_exiles = []
+        return f"💀 Фатальная неудача: погибла вся группа ({names})."
+    group.remove(pick)
+    return f"⚰️ Погибает: {session.players[pick]}."
+
+
+def _challenge_header(challenge: Challenge) -> str:
+    """возвращает заголовок испытания по его группе"""
+    return {
+        "bunker": "Угроза в бункере",
+        "exiles": "Угроза изгнанным",
+        "all": "Финальная катастрофа",
+    }[challenge.group]
+
+
+def _render_story_start(session: BunkerSession) -> str:
+    """отображает старт истории выживания: состав групп"""
+    bunker = ", ".join(
+        session.players[pid] for pid in session.survivors_bunker
+    )
+    exiles = ", ".join(
+        session.players[pid] for pid in session.survivors_exiles
+    )
+    return "\n".join(
+        [
+            "🎬 История выживания",
+            f"В бункере: {bunker or 'никого'}.",
+            f"Снаружи (изгнанные): {exiles or 'никого'}.",
+            "Проверим, кто переживёт угрозы и катастрофу. Голосуют все.",
+        ]
+    )
+
+
+def _render_challenge(session: BunkerSession) -> str:
+    """отображает объявление нового испытания"""
+    challenge = session.finale_queue[session.finale_index]
+    icon = "☢️" if challenge.kind == "catastrophe" else "⚠️"
+    names = ", ".join(
+        session.players[pid]
+        for pid in _challenge_survivors(session, challenge)
+    )
+    return "\n".join(
+        [
+            f"{icon} {_challenge_header(challenge)}",
+            challenge.text,
+            "",
+            f"Под угрозой: {names}.",
+            "Голосуйте: хватит ли у группы трёх полезных карт?",
+        ]
+    )
+
+
+def _render_story_board(session: BunkerSession) -> str:
+    """отображает табло текущего испытания истории выживания"""
+    challenge = session.finale_queue[session.finale_index]
+    return "\n".join(
+        [
+            "🎬 История выживания",
+            f"{_challenge_header(challenge)}: {challenge.text}",
+            f"Проголосовали: {len(session.story_votes)}/{len(session.players)}.",
+            "Жмите «Справились» или «Не справились».",
+        ]
+    )
+
+
+def _render_outcome(challenge: Challenge, survived: bool) -> str:
+    """отображает исход голосования по испытанию"""
+    header = _challenge_header(challenge)
+    if survived:
+        return f"✅ {header}: группа справилась с «{challenge.text}»."
+    return f"❌ {header}: не справились с «{challenge.text}»."
+
+
+def _render_story_verdict(session: BunkerSession) -> str:
+    """отображает итог истории выживания"""
+    survivors = _story_survivors(session)
+    if survivors:
+        names = ", ".join(session.players[pid] for pid in survivors)
+        return f"🏆 ИТОГ ИСТОРИИ ВЫЖИВАНИЯ\nВыжили: {names}. Поздравляем!"
+    return "☠️ ИТОГ ИСТОРИИ ВЫЖИВАНИЯ\nНе выжил никто."
 
 
 def _render_solo_lobby(lobby: SoloLobby) -> str:

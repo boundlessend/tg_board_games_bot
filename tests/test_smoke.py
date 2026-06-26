@@ -22,10 +22,13 @@ from handlers.admin import (  # noqa: E402
 )
 from handlers.bunker import (  # noqa: E402
     BunkerSession,
+    Challenge,
     SoloLobby,
     _alive,
+    _apply_casualty,
     _begin_round,
     _board_keyboard,
+    _build_finale_queue,
     _drop_lobby,
     _exclude_player,
     _generate_code,
@@ -35,6 +38,8 @@ from handlers.bunker import (  # noqa: E402
     _render_finale,
     _render_solo_intro,
     _render_solo_lobby,
+    _render_story_verdict,
+    _story_survivors,
     create_bunker_router,
 )
 from handlers.content_admin import (  # noqa: E402
@@ -424,3 +429,29 @@ def test_bunker_solo_lobby_helpers() -> None:
 
     _drop_lobby(lobby, lobbies, member_lobby)
     assert lobbies == {} and member_lobby == {}
+
+
+def test_bunker_story_finale() -> None:
+    """финал «история выживания»: очередь испытаний, потери, итог"""
+    content = load_bunker_content(DATA_DIR)
+    session = BunkerSession(host_id=1, board_chat_id=-100, story_mode=True)
+    session.players = {1: "Аня", 2: "Боря", 3: "Витя", 4: "Гена"}
+    session.catastrophe = "падение неба"
+    session.pairs = pick_pairs(content, 5)
+    session.survivors_bunker = [1, 2]
+    session.survivors_exiles = [3, 4]
+
+    queue = _build_finale_queue(session, content)
+    groups = [challenge.group for challenge in queue]
+    assert groups == ["bunker", "exiles", "exiles", "all"]
+    assert queue[-1].kind == "catastrophe"
+
+    threat = Challenge(group="bunker", kind="threat", text="прорыв воды")
+    text = _apply_casualty(session, threat)
+    assert "погиб" in text.lower()
+    assert len(session.survivors_bunker) <= 2
+
+    catastrophe = Challenge(group="all", kind="catastrophe", text="падение неба")
+    _apply_casualty(session, catastrophe)
+    assert _story_survivors(session) == []
+    assert "Не выжил никто" in _render_story_verdict(session)

@@ -9,9 +9,13 @@ from constants import (
     BACK_TO_MAIN_MENU_TITLE,
     BUNKER_CANCEL_TITLE,
     BUNKER_JOIN_TITLE,
+    BUNKER_MODE_BASE_TITLE,
+    BUNKER_MODE_STORY_TITLE,
     BUNKER_NEXT_TITLE,
     BUNKER_REVEAL_TITLE,
     BUNKER_START_TITLE,
+    BUNKER_STORY_NO_TITLE,
+    BUNKER_STORY_YES_TITLE,
     BUNKER_VOTE_START_TITLE,
     BUNKER_VOTE_TALLY_TITLE,
     CB_ADMIN_ACTIVITY,
@@ -22,9 +26,13 @@ from constants import (
     CB_BK_JOIN,
     CB_BK_NEXT,
     CB_BK_REVEAL,
+    CB_BK_MODE,
     CB_BK_SOLO_CANCEL,
     CB_BK_SOLO_START,
     CB_BK_START,
+    CB_BK_STORY_NO,
+    CB_BK_STORY_TALLY,
+    CB_BK_STORY_YES,
     CB_BK_VOTE_PREFIX,
     CB_BK_VOTE_START,
     CB_BK_VOTE_TALLY,
@@ -317,8 +325,9 @@ def create_session_lobby_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def create_bunker_lobby_keyboard() -> InlineKeyboardMarkup:
-    """создаёт клавиатуру лобби игры бункер"""
+def create_bunker_lobby_keyboard(story_mode: bool) -> InlineKeyboardMarkup:
+    """создаёт клавиатуру лобби игры бункер с переключателем режима"""
+    mode_title = BUNKER_MODE_STORY_TITLE if story_mode else BUNKER_MODE_BASE_TITLE
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -326,6 +335,7 @@ def create_bunker_lobby_keyboard() -> InlineKeyboardMarkup:
                     text=BUNKER_JOIN_TITLE, callback_data=CB_BK_JOIN
                 )
             ],
+            [InlineKeyboardButton(text=mode_title, callback_data=CB_BK_MODE)],
             [
                 InlineKeyboardButton(
                     text=BUNKER_START_TITLE, callback_data=CB_BK_START
@@ -333,6 +343,32 @@ def create_bunker_lobby_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text=BUNKER_CANCEL_TITLE, callback_data=CB_BK_CANCEL
                 ),
+            ],
+        ]
+    )
+
+
+def create_bunker_story_keyboard() -> InlineKeyboardMarkup:
+    """создаёт клавиатуру голосования в финале «история выживания»"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=BUNKER_STORY_YES_TITLE, callback_data=CB_BK_STORY_YES
+                ),
+                InlineKeyboardButton(
+                    text=BUNKER_STORY_NO_TITLE, callback_data=CB_BK_STORY_NO
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=BUNKER_VOTE_TALLY_TITLE, callback_data=CB_BK_STORY_TALLY
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=BUNKER_CANCEL_TITLE, callback_data=CB_BK_CANCEL
+                )
             ],
         ]
     )
