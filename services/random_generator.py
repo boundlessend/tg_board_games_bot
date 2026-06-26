@@ -66,7 +66,6 @@ _WORD_GAME_FILES: tuple[tuple[str, str, str], ...] = (
     ("crocodile", "Крокодил", "crocodile.json"),
     ("alias", "Алиас", "alias.json"),
     ("whoami", "Кто я?", "whoami.json"),
-    ("hat", "Шляпа", "hat.json"),
 )
 
 

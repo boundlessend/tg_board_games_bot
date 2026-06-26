@@ -110,7 +110,6 @@ def test_content_loads_and_validates() -> None:
         "crocodile",
         "alias",
         "whoami",
-        "hat",
     ]
     for game in games:
         assert len(game.words) >= 180
@@ -263,7 +262,6 @@ async def _exercise_storage() -> None:
         "Крокодил",
         "Алиас",
         "Кто я?",
-        "Шляпа",
         "Настройки",
     ]
     for keyboard in [main_menu, keyboards.create_word_game_keyboard("crocodile")]:
