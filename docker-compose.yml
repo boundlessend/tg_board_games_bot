@@ -3,6 +3,8 @@ services:
     build: .
     container_name: tg-board-games
     env_file: .env
+    environment:
+      DATABASE_PATH: /db/bot.sqlite3
     restart: unless-stopped
     volumes:
       - db:/db

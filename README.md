@@ -58,10 +58,10 @@ Compose собирает образ, поднимает бота на long polli
 
 ```bash
 docker build -t tg-board-games .
-docker run --rm --env-file .env -v tg-board-games-db:/db tg-board-games
+docker run --rm --env-file .env -e DATABASE_PATH=/db/bot.sqlite3 -v tg-board-games-db:/db tg-board-games
 ```
 
-Образ работает от непривилегированного пользователя. `--rm` подходит для запуска по требованию (под отдельную игру); для постоянного аптайма используйте `-d --restart unless-stopped`.
+Образ работает от непривилегированного пользователя, поэтому база должна лежать в томе `/db`: флаг `-e DATABASE_PATH=/db/bot.sqlite3` задаёт путь явно (иначе пустой `DATABASE_PATH` из `.env` увёл бы базу в `/app`, куда нет доступа на запись). `--rm` подходит для запуска по требованию (под отдельную игру); для постоянного аптайма используйте `-d --restart unless-stopped`.
 
 ## Данные
 
