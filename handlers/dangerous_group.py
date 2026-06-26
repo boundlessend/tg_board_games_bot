@@ -8,18 +8,26 @@ from aiogram.types import CallbackQuery, Message
 
 from constants import (
     CB_DG_BOSS,
+    CB_DG_BOSS_KEEP,
+    CB_DG_BOSS_REROLL,
     CB_DG_CURSE,
+    CB_DG_CURSE_KEEP,
+    CB_DG_CURSE_REROLL,
     CB_DG_EXPLAIN,
     CB_DG_FINISH,
     CB_DG_NEXT,
     CB_DG_OPEN,
+    CB_DG_SEND,
     CB_DG_WORD,
     DANGEROUS_WORDS_GAME_ID,
     team_label,
 )
 from database import DatabaseError, SQLiteHistoryStorage
-from keyboards import create_dangerous_group_keyboard
-from services.random_generator import Curse, DangerousWordsContent
+from keyboards import (
+    create_dangerous_group_keyboard,
+    create_dg_offer_keyboard,
+)
+from services.random_generator import Boss, Curse, DangerousWordsContent
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +40,12 @@ class DangerousGroup:
     explaining_team: int
     explainer_id: int | None
     explainer_name: str | None
+    current_word: str | None = None
     boss_revealed: bool = False
+    boss_pending: bool = False
     issued_words: set[str] = field(default_factory=set)
     issued_curses: set[str] = field(default_factory=set)
+    issued_bosses: set[str] = field(default_factory=set)
 
 
 def create_dangerous_group_router(
@@ -84,16 +95,10 @@ def create_dangerous_group_router(
 
     @router.callback_query(F.data == CB_DG_WORD)
     async def handle_word(callback: CallbackQuery) -> None:
-        """шлёт слово в ЛС загадывающему и объясняющему"""
+        """тянет слово в ЛС загадывающей команде, чтобы написать запретные"""
         session, _ = _lookup(callback, sessions)
         if session is None:
             await callback.answer()
-            return
-        if session.explainer_id is None:
-            await callback.answer(
-                "Сначала из объясняющей команды нажмите «Я объясняю».",
-                show_alert=True,
-            )
             return
         bot = callback.bot
         if bot is None:
@@ -112,20 +117,49 @@ def create_dangerous_group_router(
             return
 
         word = _pick(pool, session.issued_words)
-        recipients = {session.explainer_id, callback.from_user.id}
-        delivered = True
-        for user_id in recipients:
-            try:
-                await bot.send_message(user_id, f"Слово: {word}")
-            except TelegramForbiddenError:
-                delivered = False
-        if not delivered:
+        session.current_word = word
+        try:
+            await bot.send_message(callback.from_user.id, f"Слово: {word}")
+        except TelegramForbiddenError:
             await callback.answer(
-                "Кому-то не дошло: нужен /start в личке с ботом.",
+                "Не дошло: нужен /start в личке с ботом.", show_alert=True
+            )
+            return
+        await callback.answer(
+            "Слово у тебя в ЛС: покажи команде, напиши запретные."
+        )
+
+    @router.callback_query(F.data == CB_DG_SEND)
+    async def handle_send(callback: CallbackQuery) -> None:
+        """отправляет вытянутое слово объясняющему из другой команды"""
+        session, _ = _lookup(callback, sessions)
+        if session is None:
+            await callback.answer()
+            return
+        if session.current_word is None:
+            await callback.answer("Сначала вытяните слово.", show_alert=True)
+            return
+        if session.explainer_id is None:
+            await callback.answer(
+                "Из объясняющей команды нажмите «Я объясняю».",
                 show_alert=True,
             )
             return
-        await callback.answer("Слово ушло в ЛС.")
+        bot = callback.bot
+        if bot is None:
+            await callback.answer()
+            return
+        try:
+            await bot.send_message(
+                session.explainer_id, f"Слово: {session.current_word}"
+            )
+        except TelegramForbiddenError:
+            await callback.answer(
+                "Объясняющему не дошло: нужен /start в личке с ботом.",
+                show_alert=True,
+            )
+            return
+        await callback.answer("Слово ушло объясняющему в ЛС.")
 
     @router.callback_query(F.data == CB_DG_NEXT)
     async def handle_next(callback: CallbackQuery) -> None:
@@ -137,12 +171,13 @@ def create_dangerous_group_router(
         session.explaining_team = 1 - session.explaining_team
         session.explainer_id = None
         session.explainer_name = None
+        session.current_word = None
         await _edit_board(callback, session)
         await callback.answer()
 
     @router.callback_query(F.data == CB_DG_CURSE)
     async def handle_curse(callback: CallbackQuery) -> None:
-        """тянет проклятие и публикует его в чат (только ведущий)"""
+        """тянет проклятие и предлагает принять или реролльнуть (ведущий)"""
         session, _ = _lookup(callback, sessions)
         message = callback.message
         if session is None or not isinstance(message, Message):
@@ -164,25 +199,83 @@ def create_dangerous_group_router(
         if curse is None:
             await callback.answer("Проклятий нет.", show_alert=True)
             return
-        await message.answer(f"Проклятие: {curse.title}\n{curse.description}")
+        await message.answer(
+            _curse_text(curse),
+            reply_markup=create_dg_offer_keyboard(
+                CB_DG_CURSE_KEEP, CB_DG_CURSE_REROLL
+            ),
+        )
         await callback.answer()
 
-    @router.callback_query(F.data == CB_DG_BOSS)
-    async def handle_boss(callback: CallbackQuery) -> None:
-        """раскрывает единственного босса сессии (только ведущий)"""
+    @router.callback_query(F.data == CB_DG_CURSE_REROLL)
+    async def handle_curse_reroll(callback: CallbackQuery) -> None:
+        """заменяет предложенное проклятие новым (только ведущий)"""
         session, _ = _lookup(callback, sessions)
         message = callback.message
         if session is None or not isinstance(message, Message):
             await callback.answer()
             return
         if callback.from_user.id != session.host_id:
-            await callback.answer(
-                "Босса раскрывает ведущий.", show_alert=True
+            await callback.answer("Реролл делает ведущий.", show_alert=True)
+            return
+        try:
+            pool = content.curses + await storage.get_custom_curses()
+        except DatabaseError:
+            logger.exception("database_error", extra={"action": "dg_curse"})
+            await callback.answer("Ошибка БД. Попробуйте позже.", show_alert=True)
+            return
+
+        curse = _pick_curse(pool, session.issued_curses)
+        if curse is None:
+            await callback.answer("Проклятий нет.", show_alert=True)
+            return
+        try:
+            await message.edit_text(
+                _curse_text(curse),
+                reply_markup=create_dg_offer_keyboard(
+                    CB_DG_CURSE_KEEP, CB_DG_CURSE_REROLL
+                ),
             )
+        except TelegramBadRequest:
+            pass
+        await callback.answer("Новое проклятие.")
+
+    @router.callback_query(F.data == CB_DG_CURSE_KEEP)
+    async def handle_curse_keep(callback: CallbackQuery) -> None:
+        """фиксирует проклятие в чате, убирая кнопки (только ведущий)"""
+        session, _ = _lookup(callback, sessions)
+        message = callback.message
+        if session is None or not isinstance(message, Message):
+            await callback.answer()
+            return
+        if callback.from_user.id != session.host_id:
+            await callback.answer("Принимает ведущий.", show_alert=True)
+            return
+        try:
+            await message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest:
+            pass
+        await callback.answer("Проклятие принято.")
+
+    @router.callback_query(F.data == CB_DG_BOSS)
+    async def handle_boss(callback: CallbackQuery) -> None:
+        """тянет босса и предлагает принять или реролльнуть (ведущий)"""
+        session, _ = _lookup(callback, sessions)
+        message = callback.message
+        if session is None or not isinstance(message, Message):
+            await callback.answer()
+            return
+        if callback.from_user.id != session.host_id:
+            await callback.answer("Босса тянет ведущий.", show_alert=True)
             return
         if session.boss_revealed:
             await callback.answer(
                 "Босс уже раскрыт - он один на игру.", show_alert=True
+            )
+            return
+        if session.boss_pending:
+            await callback.answer(
+                "Босс уже на столе: примите или реролльните.", show_alert=True
             )
             return
         try:
@@ -192,11 +285,71 @@ def create_dangerous_group_router(
             await callback.answer("Ошибка БД. Попробуйте позже.", show_alert=True)
             return
 
-        boss = random.choice(pool)
-        session.boss_revealed = True
-        await message.answer(f"Босс (финал): {boss.name}\n{boss.description}")
-        await _edit_board(callback, session)
+        boss = _pick_boss(pool, session.issued_bosses)
+        if boss is None:
+            await callback.answer("Боссов нет.", show_alert=True)
+            return
+        session.boss_pending = True
+        await message.answer(
+            _boss_text(boss),
+            reply_markup=create_dg_offer_keyboard(
+                CB_DG_BOSS_KEEP, CB_DG_BOSS_REROLL
+            ),
+        )
         await callback.answer()
+
+    @router.callback_query(F.data == CB_DG_BOSS_REROLL)
+    async def handle_boss_reroll(callback: CallbackQuery) -> None:
+        """заменяет предложенного босса новым (только ведущий)"""
+        session, _ = _lookup(callback, sessions)
+        message = callback.message
+        if session is None or not isinstance(message, Message):
+            await callback.answer()
+            return
+        if callback.from_user.id != session.host_id:
+            await callback.answer("Реролл делает ведущий.", show_alert=True)
+            return
+        try:
+            pool = content.bosses + await storage.get_custom_bosses()
+        except DatabaseError:
+            logger.exception("database_error", extra={"action": "dg_boss"})
+            await callback.answer("Ошибка БД. Попробуйте позже.", show_alert=True)
+            return
+
+        boss = _pick_boss(pool, session.issued_bosses)
+        if boss is None:
+            await callback.answer("Боссов нет.", show_alert=True)
+            return
+        try:
+            await message.edit_text(
+                _boss_text(boss),
+                reply_markup=create_dg_offer_keyboard(
+                    CB_DG_BOSS_KEEP, CB_DG_BOSS_REROLL
+                ),
+            )
+        except TelegramBadRequest:
+            pass
+        await callback.answer("Новый босс.")
+
+    @router.callback_query(F.data == CB_DG_BOSS_KEEP)
+    async def handle_boss_keep(callback: CallbackQuery) -> None:
+        """фиксирует босса на игру, убирая кнопки (только ведущий)"""
+        session, _ = _lookup(callback, sessions)
+        message = callback.message
+        if session is None or not isinstance(message, Message):
+            await callback.answer()
+            return
+        if callback.from_user.id != session.host_id:
+            await callback.answer("Принимает ведущий.", show_alert=True)
+            return
+        session.boss_revealed = True
+        session.boss_pending = False
+        # ponytail: статус босса на табло обновится при следующем рендере
+        try:
+            await message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest:
+            pass
+        await callback.answer("Босс зафиксирован на игру.")
 
     @router.callback_query(F.data == CB_DG_FINISH)
     async def handle_finish(callback: CallbackQuery) -> None:
@@ -270,6 +423,29 @@ def _pick_curse(pool: list[Curse], issued: set[str]) -> Curse | None:
     return curse
 
 
+def _pick_boss(pool: list[Boss], issued: set[str]) -> Boss | None:
+    """выбирает босса без повтора в сессии"""
+    if len(pool) == 0:
+        return None
+    available = [boss for boss in pool if boss.id not in issued]
+    if len(available) == 0:
+        issued.clear()
+        available = list(pool)
+    boss = random.choice(available)
+    issued.add(boss.id)
+    return boss
+
+
+def _curse_text(curse: Curse) -> str:
+    """текст сообщения с проклятием"""
+    return f"Проклятие: {curse.title}\n{curse.description}"
+
+
+def _boss_text(boss: Boss) -> str:
+    """текст сообщения с боссом"""
+    return f"Босс (финал): {boss.name}\n{boss.description}"
+
+
 def _render_board(session: DangerousGroup) -> str:
     """рисует поле командной партии «опасные слова»"""
     explaining = session.explaining_team
@@ -283,10 +459,10 @@ def _render_board(session: DangerousGroup) -> str:
             f"Объясняет: {team_label(explaining)}.",
             f"Объясняющий: {explainer}.",
             "",
-            f"{team_label(drawing)} жмёт «Тянуть слово» (придёт ей и "
-            "объясняющему в ЛС) и пишет запретные слова.",
-            f"Объясняющий из {team_label(explaining)} объясняет, не называя "
-            "запретных слов.",
+            f"{team_label(drawing)} жмёт «Тянуть слово» (придёт ей в ЛС), "
+            "пишет запретные, затем «Отправить слово».",
+            f"Объясняющему из {team_label(explaining)} слово придёт в ЛС: "
+            "он объясняет, не называя запретных.",
             f"Босс: {boss}.",
         ]
     )

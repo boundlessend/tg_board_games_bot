@@ -54,6 +54,7 @@ from handlers.content_admin import (  # noqa: E402
 from handlers.dangerous_group import (  # noqa: E402
     DangerousGroup,
     _pick as _dg_pick,
+    _pick_boss as _dg_pick_boss,
     _pick_curse as _dg_pick_curse,
     _render_board as _render_dg_board,
     create_dangerous_group_router,
@@ -460,6 +461,10 @@ def test_dangerous_group_helpers() -> None:
     curse = _dg_pick_curse(content.curses, session.issued_curses)
     assert curse is not None and curse.id in session.issued_curses
     assert _dg_pick_curse([], set()) is None
+
+    boss = _dg_pick_boss(content.bosses, session.issued_bosses)
+    assert boss is not None and boss.id in session.issued_bosses
+    assert _dg_pick_boss([], set()) is None
 
 
 def test_bunker_content_and_logic() -> None:

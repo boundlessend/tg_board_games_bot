@@ -43,6 +43,7 @@ from constants import (
     CB_DG_FINISH,
     CB_DG_NEXT,
     CB_DG_OPEN,
+    CB_DG_SEND,
     CB_DG_WORD,
     CB_GS_CANCEL,
     CB_GS_FINISH,
@@ -66,7 +67,10 @@ from constants import (
     DG_CURSE_TITLE,
     DG_EXPLAIN_TITLE,
     DG_FINISH_TITLE,
+    DG_KEEP_TITLE,
     DG_NEXT_TITLE,
+    DG_REROLL_TITLE,
+    DG_SEND_TITLE,
     DG_WORD_TITLE,
     MAX_TEAMS,
     MIN_TEAMS,
@@ -145,7 +149,10 @@ def create_dangerous_group_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text=DG_WORD_TITLE, callback_data=CB_DG_WORD
-                )
+                ),
+                InlineKeyboardButton(
+                    text=DG_SEND_TITLE, callback_data=CB_DG_SEND
+                ),
             ],
             [
                 InlineKeyboardButton(
@@ -165,6 +172,24 @@ def create_dangerous_group_keyboard() -> InlineKeyboardMarkup:
                     text=DG_FINISH_TITLE, callback_data=CB_DG_FINISH
                 )
             ],
+        ]
+    )
+
+
+def create_dg_offer_keyboard(
+    keep_data: str, reroll_data: str
+) -> InlineKeyboardMarkup:
+    """создаёт клавиатуру «принять/реролл» для проклятия или босса"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=DG_KEEP_TITLE, callback_data=keep_data
+                ),
+                InlineKeyboardButton(
+                    text=DG_REROLL_TITLE, callback_data=reroll_data
+                ),
+            ]
         ]
     )
 
