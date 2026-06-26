@@ -53,11 +53,13 @@ from handlers.content_admin import (  # noqa: E402
 )
 from handlers.dangerous_group import (  # noqa: E402
     DangerousGroup,
+    _persist_sessions as _dg_persist,
     _pick as _dg_pick,
     _pick_boss as _dg_pick_boss,
     _pick_curse as _dg_pick_curse,
     _render_board as _render_dg_board,
     create_dangerous_group_router,
+    restore_dangerous_sessions,
 )
 from handlers.favorites import create_favorites_router  # noqa: E402
 from handlers.group_session import (  # noqa: E402
@@ -266,7 +268,9 @@ async def _exercise_storage() -> None:
         create_group_session_router(games, storage, {})
     )
     dispatcher.include_router(create_bunker_router(load_bunker_content(DATA_DIR)))
-    dispatcher.include_router(create_dangerous_group_router(content, storage))
+    dispatcher.include_router(
+        create_dangerous_group_router(content, storage, {})
+    )
 
     private_menu = keyboards.create_private_menu_keyboard(games)
     private_labels = [
@@ -324,6 +328,25 @@ async def _exercise_storage() -> None:
     empty: dict[int, GroupSession] = {}
     await restore_group_sessions(storage, games, empty)
     assert empty == {}
+
+    dgs = DangerousGroup(
+        host_id=2,
+        explaining_team=1,
+        explainer_id=9,
+        explainer_name="Боря",
+    )
+    dgs.current_word = "тайна"
+    dgs.boss_revealed = True
+    dgs.issued_curses = {"c1"}
+    await _dg_persist(storage, {-200: dgs})
+    dg_restored: dict[int, DangerousGroup] = {}
+    await restore_dangerous_sessions(storage, dg_restored)
+    assert set(dg_restored) == {-200}
+    dgr = dg_restored[-200]
+    assert dgr.explaining_team == 1 and dgr.explainer_name == "Боря"
+    assert dgr.current_word == "тайна" and dgr.boss_revealed is True
+    assert dgr.issued_curses == {"c1"}
+    await storage.replace_session_scope("dangerous", {})
 
 
 def test_storage_and_wiring() -> None:

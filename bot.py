@@ -8,7 +8,11 @@ from database import SQLiteHistoryStorage
 from handlers.admin import create_admin_router
 from handlers.bunker import create_bunker_router
 from handlers.content_admin import create_content_admin_router
-from handlers.dangerous_group import create_dangerous_group_router
+from handlers.dangerous_group import (
+    DangerousGroup,
+    create_dangerous_group_router,
+    restore_dangerous_sessions,
+)
 from handlers.favorites import create_favorites_router
 from handlers.group_session import (
     GroupSession,
@@ -42,6 +46,8 @@ async def main() -> None:
 
     group_sessions: dict[int, GroupSession] = {}
     await restore_group_sessions(storage, word_games, group_sessions)
+    dangerous_sessions: dict[int, DangerousGroup] = {}
+    await restore_dangerous_sessions(storage, dangerous_sessions)
 
     bot = Bot(token=config.bot_token)
     dispatcher = Dispatcher()
@@ -61,7 +67,7 @@ async def main() -> None:
     )
     dispatcher.include_router(create_bunker_router(bunker_content))
     dispatcher.include_router(
-        create_dangerous_group_router(content, storage)
+        create_dangerous_group_router(content, storage, dangerous_sessions)
     )
 
     await dispatcher.start_polling(bot)

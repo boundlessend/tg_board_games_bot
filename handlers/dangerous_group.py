@@ -1,10 +1,13 @@
+import json
 import logging
 import random
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from constants import (
     CB_DG_BOSS,
@@ -31,6 +34,8 @@ from services.random_generator import Boss, Curse, DangerousWordsContent
 
 logger = logging.getLogger(__name__)
 
+_SCOPE = "dangerous"
+
 
 @dataclass
 class DangerousGroup:
@@ -51,10 +56,27 @@ class DangerousGroup:
 def create_dangerous_group_router(
     content: DangerousWordsContent,
     storage: SQLiteHistoryStorage,
+    sessions: dict[int, DangerousGroup],
 ) -> Router:
     """создаёт роутер командной игры «опасные слова» (бот-крупье)"""
     router = Router()
-    sessions: dict[int, DangerousGroup] = {}
+
+    async def _persist_mw(
+        handler: Callable[
+            [TelegramObject, dict[str, Any]], Awaitable[Any]
+        ],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        """сохраняет снапшот сессий после каждой обработки callback"""
+        result = await handler(event, data)
+        try:
+            await _persist_sessions(storage, sessions)
+        except DatabaseError:
+            logger.exception("session_persist_failed", extra={"scope": _SCOPE})
+        return result
+
+    router.callback_query.middleware(_persist_mw)
 
     @router.callback_query(F.data == CB_DG_OPEN)
     async def handle_open(callback: CallbackQuery) -> None:
@@ -371,6 +393,58 @@ def create_dangerous_group_router(
         await callback.answer()
 
     return router
+
+
+def _dump_session(session: DangerousGroup) -> dict[str, Any]:
+    """сериализует партию «опасные слова» в словарь"""
+    return {
+        "host_id": session.host_id,
+        "explaining_team": session.explaining_team,
+        "explainer_id": session.explainer_id,
+        "explainer_name": session.explainer_name,
+        "current_word": session.current_word,
+        "boss_revealed": session.boss_revealed,
+        "boss_pending": session.boss_pending,
+        "issued_words": list(session.issued_words),
+        "issued_curses": list(session.issued_curses),
+        "issued_bosses": list(session.issued_bosses),
+    }
+
+
+def _load_session(data: dict[str, Any]) -> DangerousGroup:
+    """восстанавливает партию «опасные слова» из словаря"""
+    return DangerousGroup(
+        host_id=data["host_id"],
+        explaining_team=data["explaining_team"],
+        explainer_id=data["explainer_id"],
+        explainer_name=data["explainer_name"],
+        current_word=data["current_word"],
+        boss_revealed=data["boss_revealed"],
+        boss_pending=data["boss_pending"],
+        issued_words=set(data["issued_words"]),
+        issued_curses=set(data["issued_curses"]),
+        issued_bosses=set(data["issued_bosses"]),
+    )
+
+
+async def _persist_sessions(
+    storage: SQLiteHistoryStorage, sessions: dict[int, DangerousGroup]
+) -> None:
+    """сохраняет снапшот всех партий «опасные слова»"""
+    items = {
+        str(chat_id): json.dumps(_dump_session(session))
+        for chat_id, session in sessions.items()
+    }
+    await storage.replace_session_scope(_SCOPE, items)
+
+
+async def restore_dangerous_sessions(
+    storage: SQLiteHistoryStorage, sessions: dict[int, DangerousGroup]
+) -> None:
+    """наполняет словарь партий снапшотами из хранилища при старте"""
+    raw = await storage.load_session_scope(_SCOPE)
+    for key, data in raw.items():
+        sessions[int(key)] = _load_session(json.loads(data))
 
 
 def _lookup(
