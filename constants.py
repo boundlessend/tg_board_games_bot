@@ -115,6 +115,21 @@ CB_DW_RESET_BOSSES = "dw:reset_bosses"
 CB_ADMIN_STATS = "admin:stats"
 CB_ADMIN_CLOSE = "admin:close"
 
+CB_DG_OPEN = "dg:open"
+CB_DG_EXPLAIN = "dg:explain"
+CB_DG_WORD = "dg:word"
+CB_DG_NEXT = "dg:next"
+CB_DG_CURSE = "dg:curse"
+CB_DG_BOSS = "dg:boss"
+CB_DG_FINISH = "dg:finish"
+
+DG_EXPLAIN_TITLE = "Я объясняю"
+DG_WORD_TITLE = "Тянуть слово"
+DG_NEXT_TITLE = "Передать ход"
+DG_CURSE_TITLE = "Проклятие"
+DG_BOSS_TITLE = "Босс (финал)"
+DG_FINISH_TITLE = "Завершить"
+
 BOSSES_LIMIT = 200
 CURSES_LIMIT = 200
 TELEGRAM_MESSAGE_LIMIT = 3500

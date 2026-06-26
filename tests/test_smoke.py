@@ -51,6 +51,13 @@ from handlers.content_admin import (  # noqa: E402
     _parse_words_pack,
     create_content_admin_router,
 )
+from handlers.dangerous_group import (  # noqa: E402
+    DangerousGroup,
+    _pick as _dg_pick,
+    _pick_curse as _dg_pick_curse,
+    _render_board as _render_dg_board,
+    create_dangerous_group_router,
+)
 from handlers.dangerous_words import create_dangerous_words_router  # noqa: E402
 from handlers.favorites import create_favorites_router  # noqa: E402
 from handlers.group_session import (  # noqa: E402
@@ -255,6 +262,7 @@ async def _exercise_storage() -> None:
     dispatcher.include_router(create_word_games_router(games, storage))
     dispatcher.include_router(create_group_session_router(games, storage))
     dispatcher.include_router(create_bunker_router(load_bunker_content(DATA_DIR)))
+    dispatcher.include_router(create_dangerous_group_router(content, storage))
     dispatcher.include_router(create_dangerous_words_router(content, storage))
 
     private_menu = keyboards.create_private_menu_keyboard(games)
@@ -420,6 +428,40 @@ async def _exercise_turn_timer() -> None:
 def test_turn_timer() -> None:
     """проверяет авто-завершение хода по таймеру"""
     asyncio.run(_exercise_turn_timer())
+
+
+def test_dangerous_group_helpers() -> None:
+    """проверяет чистую логику командных «опасных слов»"""
+    content = load_dangerous_words_content(DATA_DIR)
+    session = DangerousGroup(
+        host_id=1,
+        explaining_team=0,
+        explainer_id=None,
+        explainer_name=None,
+    )
+    board = _render_dg_board(session)
+    assert "Загадывает: Команда 2" in board
+    assert "Объясняет: Команда 1" in board
+    assert "Объясняющий: не выбран" in board
+    assert "в колоде" in board
+
+    session.explaining_team = 1
+    session.explainer_name = "Аня"
+    session.boss_revealed = True
+    board2 = _render_dg_board(session)
+    assert "Загадывает: Команда 1" in board2
+    assert "Объясняющий: Аня" in board2
+    assert "Босс: раскрыт" in board2
+
+    issued: set[str] = set()
+    first = _dg_pick(["a", "b"], issued)
+    second = _dg_pick(["a", "b"], issued)
+    assert {first, second} == {"a", "b"}
+    assert _dg_pick(["a", "b"], issued) in {"a", "b"}
+
+    curse = _dg_pick_curse(content.curses, session.issued_curses)
+    assert curse is not None and curse.id in session.issued_curses
+    assert _dg_pick_curse([], set()) is None
 
 
 def test_bunker_content_and_logic() -> None:

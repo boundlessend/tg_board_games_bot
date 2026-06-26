@@ -38,6 +38,13 @@ from constants import (
     CB_BK_VOTE_PREFIX,
     CB_BK_VOTE_START,
     CB_BK_VOTE_TALLY,
+    CB_DG_BOSS,
+    CB_DG_CURSE,
+    CB_DG_EXPLAIN,
+    CB_DG_FINISH,
+    CB_DG_NEXT,
+    CB_DG_OPEN,
+    CB_DG_WORD,
     CB_DW_BOSS,
     CB_DW_CURSE,
     CB_DW_HOST,
@@ -71,6 +78,12 @@ from constants import (
     DANGEROUS_WORDS_GAME_TITLE,
     DANGEROUS_WORDS_HOST_TITLE,
     DANGEROUS_WORDS_PLAYER_TITLE,
+    DG_BOSS_TITLE,
+    DG_CURSE_TITLE,
+    DG_EXPLAIN_TITLE,
+    DG_FINISH_TITLE,
+    DG_NEXT_TITLE,
+    DG_WORD_TITLE,
     MAX_TEAMS,
     MIN_TEAMS,
     NEW_GAME_TITLE,
@@ -130,7 +143,7 @@ def create_group_menu_keyboard(
     rows.append(
         [
             InlineKeyboardButton(
-                text=DANGEROUS_WORDS_GAME_TITLE, callback_data=CB_DW_ROLES
+                text=DANGEROUS_WORDS_GAME_TITLE, callback_data=CB_DG_OPEN
             )
         ]
     )
@@ -138,6 +151,42 @@ def create_group_menu_keyboard(
         [InlineKeyboardButton(text=BUNKER_GAME_TITLE, callback_data=CB_BK_OPEN)]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def create_dangerous_group_keyboard() -> InlineKeyboardMarkup:
+    """создаёт клавиатуру командной партии «опасные слова» в беседе"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=DG_EXPLAIN_TITLE, callback_data=CB_DG_EXPLAIN
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=DG_WORD_TITLE, callback_data=CB_DG_WORD
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=DG_NEXT_TITLE, callback_data=CB_DG_NEXT
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=DG_CURSE_TITLE, callback_data=CB_DG_CURSE
+                ),
+                InlineKeyboardButton(
+                    text=DG_BOSS_TITLE, callback_data=CB_DG_BOSS
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=DG_FINISH_TITLE, callback_data=CB_DG_FINISH
+                )
+            ],
+        ]
+    )
 
 
 def create_settings_keyboard(auto_cycle: bool) -> InlineKeyboardMarkup:

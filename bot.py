@@ -8,6 +8,7 @@ from database import SQLiteHistoryStorage
 from handlers.admin import create_admin_router
 from handlers.bunker import create_bunker_router
 from handlers.content_admin import create_content_admin_router
+from handlers.dangerous_group import create_dangerous_group_router
 from handlers.dangerous_words import create_dangerous_words_router
 from handlers.favorites import create_favorites_router
 from handlers.group_session import create_group_session_router
@@ -53,6 +54,9 @@ async def main() -> None:
         create_group_session_router(word_games, storage)
     )
     dispatcher.include_router(create_bunker_router(bunker_content))
+    dispatcher.include_router(
+        create_dangerous_group_router(content, storage)
+    )
     dispatcher.include_router(create_dangerous_words_router(content, storage))
 
     await dispatcher.start_polling(bot)

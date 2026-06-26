@@ -63,7 +63,8 @@ def create_group_session_router(
 ) -> Router:
     """создаёт роутер групповых сессий (команды + табло, слова в ЛС)"""
     router = Router()
-    games_by_id = {game.game_id: game for game in word_games}
+    group_games = [game for game in word_games if game.game_id != "whoami"]
+    games_by_id = {game.game_id: game for game in group_games}
     sessions: dict[int, GroupSession] = {}
 
     @router.message(Command("play"))
@@ -74,7 +75,7 @@ def create_group_session_router(
             return
         await message.answer(
             "Выбери игру для сессии:",
-            reply_markup=create_play_games_keyboard(word_games),
+            reply_markup=create_play_games_keyboard(group_games),
         )
 
     @router.callback_query(_startswith(CB_GS_NEW_PREFIX))
