@@ -15,6 +15,7 @@ from constants import (
     CB_GS_JOIN_PREFIX,
     CB_GS_NEW_PREFIX,
     CB_GS_NEXT,
+    CB_GS_REROLL,
     CB_GS_SCORE,
     CB_GS_SKIP,
     CB_GS_START,
@@ -295,6 +296,27 @@ def create_group_session_router(
         )
         if not delivered:
             return
+        await edit_menu(
+            callback, _render_play(session), create_session_play_keyboard()
+        )
+
+    @router.callback_query(F.data == CB_GS_REROLL)
+    async def handle_reroll(callback: CallbackQuery) -> None:
+        """меняет слово со штрафом -1 очка текущей команде"""
+        session, _ = _lookup(callback, sessions)
+        if session is None or not session.started:
+            await callback.answer()
+            return
+        if session.explainer_id is None:
+            await callback.answer("Сначала возьми слово.", show_alert=True)
+            return
+
+        delivered = await _deliver_word(
+            callback, session, storage, session.explainer_id
+        )
+        if not delivered:
+            return
+        session.scores[session.current_team] -= 1
         await edit_menu(
             callback, _render_play(session), create_session_play_keyboard()
         )

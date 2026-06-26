@@ -50,6 +50,7 @@ from constants import (
     CB_GS_JOIN_PREFIX,
     CB_GS_NEW_PREFIX,
     CB_GS_NEXT,
+    CB_GS_REROLL,
     CB_GS_SCORE,
     CB_GS_SKIP,
     CB_GS_START,
@@ -77,6 +78,7 @@ from constants import (
     SESSION_CANCEL_TITLE,
     SESSION_FINISH_TITLE,
     SESSION_NEXT_TITLE,
+    SESSION_REROLL_TITLE,
     SESSION_SCORE_TITLE,
     SESSION_SKIP_TITLE,
     SESSION_START_TITLE,
@@ -462,6 +464,11 @@ def create_session_play_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text=SESSION_SKIP_TITLE, callback_data=CB_GS_SKIP
                 ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=SESSION_REROLL_TITLE, callback_data=CB_GS_REROLL
+                )
             ],
             [
                 InlineKeyboardButton(

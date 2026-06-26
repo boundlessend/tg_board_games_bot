@@ -389,6 +389,14 @@ def test_group_session_helpers() -> None:
     assert _is_group("supergroup") is True
     assert _is_group("private") is False
 
+    play_labels = [
+        button.text
+        for row in keyboards.create_session_play_keyboard().inline_keyboard
+        for button in row
+    ]
+    assert "Реролл (-1)" in play_labels
+    assert "Угадали +1" in play_labels and "Пропустить" in play_labels
+
 
 class _RecordingBot:
     """заглушка бота: запоминает отправленные сообщения"""
