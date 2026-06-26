@@ -59,6 +59,16 @@ _CHARACTER_CATEGORIES: tuple[str, ...] = (
     "special_conditions",
 )
 
+# поля PlayerHand, раскрываемые по одному за раунд (5 раундов); поле fact
+# остаётся закрытым до финала, special_condition разыгрывается отдельно
+REVEAL_ORDER: tuple[str, ...] = (
+    "superpower",
+    "phobia",
+    "character",
+    "hobby",
+    "baggage",
+)
+
 MIN_PLAYERS = 4
 MAX_PLAYERS = 16
 

@@ -7,10 +7,25 @@ from constants import (
     ADMIN_STATS_TITLE,
     BACK_TO_DANGEROUS_WORDS_TITLE,
     BACK_TO_MAIN_MENU_TITLE,
+    BUNKER_CANCEL_TITLE,
+    BUNKER_JOIN_TITLE,
+    BUNKER_NEXT_TITLE,
+    BUNKER_REVEAL_TITLE,
+    BUNKER_START_TITLE,
+    BUNKER_VOTE_START_TITLE,
+    BUNKER_VOTE_TALLY_TITLE,
     CB_ADMIN_ACTIVITY,
     CB_ADMIN_CLOSE,
     CB_ADMIN_CSV,
     CB_ADMIN_STATS,
+    CB_BK_CANCEL,
+    CB_BK_JOIN,
+    CB_BK_NEXT,
+    CB_BK_REVEAL,
+    CB_BK_START,
+    CB_BK_VOTE_PREFIX,
+    CB_BK_VOTE_START,
+    CB_BK_VOTE_TALLY,
     CB_DW_BOSS,
     CB_DW_CURSE,
     CB_DW_HOST,
@@ -295,6 +310,84 @@ def create_session_lobby_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(
                 text=SESSION_CANCEL_TITLE, callback_data=CB_GS_CANCEL
             ),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def create_bunker_lobby_keyboard() -> InlineKeyboardMarkup:
+    """создаёт клавиатуру лобби игры бункер"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=BUNKER_JOIN_TITLE, callback_data=CB_BK_JOIN
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=BUNKER_START_TITLE, callback_data=CB_BK_START
+                ),
+                InlineKeyboardButton(
+                    text=BUNKER_CANCEL_TITLE, callback_data=CB_BK_CANCEL
+                ),
+            ],
+        ]
+    )
+
+
+def create_bunker_reveal_keyboard(votes_pending: bool) -> InlineKeyboardMarkup:
+    """создаёт клавиатуру фазы открытия карт игры бункер"""
+    control = (
+        InlineKeyboardButton(
+            text=BUNKER_VOTE_START_TITLE, callback_data=CB_BK_VOTE_START
+        )
+        if votes_pending
+        else InlineKeyboardButton(
+            text=BUNKER_NEXT_TITLE, callback_data=CB_BK_NEXT
+        )
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=BUNKER_REVEAL_TITLE, callback_data=CB_BK_REVEAL
+                )
+            ],
+            [control],
+            [
+                InlineKeyboardButton(
+                    text=BUNKER_CANCEL_TITLE, callback_data=CB_BK_CANCEL
+                )
+            ],
+        ]
+    )
+
+
+def create_bunker_vote_keyboard(
+    candidates: list[tuple[int, str]],
+) -> InlineKeyboardMarkup:
+    """создаёт клавиатуру голосования за изгнание в игре бункер"""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=name, callback_data=CB_BK_VOTE_PREFIX + str(candidate_id)
+            )
+        ]
+        for candidate_id, name in candidates
+    ]
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text=BUNKER_VOTE_TALLY_TITLE, callback_data=CB_BK_VOTE_TALLY
+            )
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text=BUNKER_CANCEL_TITLE, callback_data=CB_BK_CANCEL
+            )
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)

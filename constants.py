@@ -53,6 +53,33 @@ WORD_GAME_RESET_TITLE = "Новая игра (сбросить)"
 DANGEROUS_WORDS_GAME_ID = "dangerous_words"
 BUNKER_GAME_ID = "bunker"
 BUNKER_GAME_TITLE = "Бункер"
+
+CB_BK_JOIN = "bk:join"
+CB_BK_START = "bk:start"
+CB_BK_CANCEL = "bk:cancel"
+CB_BK_REVEAL = "bk:reveal"
+CB_BK_VOTE_START = "bk:vote_start"
+CB_BK_VOTE_TALLY = "bk:vote_tally"
+CB_BK_NEXT = "bk:next"
+CB_BK_VOTE_PREFIX = "bk:v:"
+
+BUNKER_JOIN_TITLE = "Вступить в бункер"
+BUNKER_START_TITLE = "Начать"
+BUNKER_CANCEL_TITLE = "Отменить игру"
+BUNKER_REVEAL_TITLE = "Открыть мою карту"
+BUNKER_VOTE_START_TITLE = "Начать голосование"
+BUNKER_VOTE_TALLY_TITLE = "Подвести итоги"
+BUNKER_NEXT_TITLE = "Следующий раунд"
+
+BUNKER_CARD_LABELS: dict[str, str] = {
+    "superpower": "Суперсила",
+    "phobia": "Фобия",
+    "character": "Характер",
+    "hobby": "Хобби",
+    "baggage": "Багаж",
+    "fact": "Факт",
+    "special_condition": "Особое условие",
+}
 CB_DW_ROLES = "dw:roles"
 CB_DW_HOST = "dw:host"
 CB_DW_PLAYER = "dw:player"

@@ -20,6 +20,17 @@ from handlers.admin import (  # noqa: E402
     _build_summary,
     create_admin_router,
 )
+from handlers.bunker import (  # noqa: E402
+    BunkerSession,
+    _alive,
+    _begin_round,
+    _board_keyboard,
+    _exclude_player,
+    _open_vote,
+    _render_board,
+    _render_finale,
+    create_bunker_router,
+)
 from handlers.content_admin import (  # noqa: E402
     _addword_usage,
     _is_sqlite_file,
@@ -226,6 +237,7 @@ async def _exercise_storage() -> None:
     dispatcher.include_router(create_inline_router(content))
     dispatcher.include_router(create_word_games_router(games, storage))
     dispatcher.include_router(create_group_session_router(games, storage))
+    dispatcher.include_router(create_bunker_router(load_bunker_content(DATA_DIR)))
     dispatcher.include_router(create_dangerous_words_router(content, storage))
 
     main_menu = keyboards.create_main_menu_keyboard(games)
@@ -346,3 +358,36 @@ def test_bunker_content_and_logic() -> None:
     tied, tied_top = vote_leaders({1: 5, 2: 8})
     assert set(tied) == {5, 8} and tied_top == 1
     assert vote_leaders({}) == ([], 0)
+
+
+def test_bunker_handler_helpers() -> None:
+    """движок партии бункер: рендер табло, фазы, изгнание, финал"""
+    content = load_bunker_content(DATA_DIR)
+    session = BunkerSession(host_id=1, board_chat_id=-100)
+    session.players = {1: "Аня", 2: "Боря", 3: "Витя", 4: "Гена"}
+    assert "Сбор" in _render_board(session)
+
+    session.catastrophe = "тест"
+    session.pairs = pick_pairs(content, 5)
+    session.plan = rounds_plan(4)
+    session.hands = dict(zip(session.players, deal_hands(content, 4), strict=True))
+    session.revealed_count = {pid: 0 for pid in session.players}
+    _begin_round(session, 4)
+    board = _render_board(session)
+    assert "раунд 4/5" in board and "Аня" in board
+    assert session.votes_pending == 1
+
+    _open_vote(session, _alive(session))
+    assert session.phase == "vote"
+    keyboard = _board_keyboard(session)
+    texts = [button.text for row in keyboard.inline_keyboard for button in row]
+    assert "Боря" in texts and "Подвести итоги" in texts
+    for row in keyboard.inline_keyboard:
+        for button in row:
+            assert button.callback_data is not None
+            assert len(button.callback_data.encode()) <= 64
+
+    _exclude_player(session, 2)
+    assert 2 in session.excluded and session.revealed_count[2] == 5
+    assert _alive(session) == [1, 3, 4]
+    assert "ФИНАЛ" in _render_finale(session)
