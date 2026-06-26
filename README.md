@@ -47,10 +47,10 @@ python bot.py
 
 ```bash
 docker build -t tg-board-games .
-docker run --env-file .env -v "$(pwd)/db:/db" -e DATABASE_PATH=/db/bot.sqlite3 tg-board-games
+docker run --rm --env-file .env -v tg-board-games-db:/db tg-board-games
 ```
 
-Бот рассчитан на запуск по требованию (под отдельные игры), работает на long polling. Том `-v "$(pwd)/db:/db"` + `DATABASE_PATH=/db/bot.sqlite3` сохраняют историю выдач между запусками, иначе она теряется вместе с контейнером. Путь `DATABASE_PATH` можно задать и в `.env`; если он пуст, база создаётся рядом с кодом (`./bot.sqlite3`).
+Образ работает от непривилегированного пользователя на long polling, рассчитан на запуск по требованию (под отдельные игры). Путь к базе уже зашит в образ (`DATABASE_PATH=/db/bot.sqlite3`), поэтому достаточно подключить том `-v tg-board-games-db:/db` - история выдач сохраняется между запусками. `--env-file .env` передаёт `BOT_TOKEN` и `ADMIN_IDS` (сам `.env` в образ не попадает). Остановить - `Ctrl+C`. Для постоянного аптайма замените `--rm` на `-d --restart unless-stopped`.
 
 ## Данные
 

@@ -1,9 +1,21 @@
+.git/
+.github/
 .venv/
 __pycache__/
 *.py[cod]
-bot.sqlite3
+.gitignore
+.dockerignore
 .env
-.DS_Store
-.git/
+.env.example
 .cgcignore
-Опасные слова_правила.pdf
+.coverage
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+tests/
+db/
+*.sqlite3
+requirements-dev.txt
+*.md
+LICENSE
+*.pdf

@@ -56,6 +56,7 @@ Telegram-бот с набором помощников для настольны
 - Конфигурация: `BOT_TOKEN` из `.env` (python-dotenv). Отсутствие токена приводит к явной ошибке `ConfigError`.
 - Обработка ошибок: специфичные исключения (`ConfigError`, `DatabaseError`, `ContentError`/`EmptyPoolError`/`DataFileError`, `DuplicateHistoryItemError`); ошибки БД логируются структурированно и не роняют бота, пользователь получает понятное сообщение.
 - Валидация контента при загрузке: проверка структуры JSON, непустых строк, уникальности id и слов.
+- Деплой: Docker-образ (`python:3.12-slim`, непривилегированный пользователь), запуск по требованию на long polling. База - том `/db` (`DATABASE_PATH=/db/bot.sqlite3`), переживает перезапуски. Webhook не используется (см. D-16).
 
 ## 6. Архитектура
 
@@ -65,8 +66,8 @@ Telegram-бот с набором помощников для настольны
 - `keyboards.py` - сборка reply-клавиатур.
 - `database.py` - `SQLiteHistoryStorage`: подключение к SQLite и операции с историей.
 - `services/random_generator.py` - загрузка/валидация контента и чистая логика выбора без повторов (`select_unique_item`).
-- `handlers/` - `start.py`, `dangerous_words.py`, `admin.py`.
-- `data/` - `words.json`, `curses.json`, `bosses.json`.
+- `handlers/` - `start.py`, `word_games.py`, `group_session.py`, `dangerous_group.py`, `bunker.py`, `inline.py`, `settings.py`, `favorites.py`, `admin.py`, `content_admin.py`.
+- `data/` - `words.json`, `curses.json`, `bosses.json`, `crocodile.json`, `alias.json`, `whoami.json`, `bunker.json`.
 - `exceptions.py` - общие исключения.
 
 ## 7. Модель данных
@@ -91,7 +92,7 @@ Telegram-бот с набором помощников для настольны
 - Состояние «вошёл в админку» хранится в памяти процесса и теряется при рестарте.
 - Названия кнопок выдачи начинаются со слова «Создать», хотя фактически контент не создаётся пользователем, а выдаётся из готового пула.
 - Слова в отличие от проклятий и боссов не обнуляются автоматически после исчерпания.
-- Деплой только через polling; нет Dockerfile, webhook, миграций схемы (схема создаётся через `create_all`).
+- Деплой через polling; webhook и миграций схемы нет (схема создаётся через `create_all`). Docker-образ добавлен позднее (см. #16).
 - Опечатка в тексте кнопки роли: `Я ведуший`.
 
 ## 10. Вне scope V1
