@@ -128,6 +128,14 @@ favorites_table = Table(
     UniqueConstraint("telegram_id", "word"),
 )
 
+session_state_table = Table(
+    "session_state",
+    metadata,
+    Column("scope", String, primary_key=True),
+    Column("key", String, primary_key=True),
+    Column("data", String, nullable=False),
+)
+
 
 _HISTORY_TABLE_NAMES: tuple[str, ...] = (
     USER_WORDS_TABLE_NAME,
@@ -717,6 +725,44 @@ class SQLiteHistoryStorage:
             ) from error
 
         return [(str(row[0]), int(row[1])) for row in rows]
+
+    async def replace_session_scope(
+        self, scope: str, items: dict[str, str]
+    ) -> None:
+        """перезаписывает снапшоты активных сессий одного scope"""
+        rows = [
+            {"scope": scope, "key": key, "data": data}
+            for key, data in items.items()
+        ]
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(
+                    delete(session_state_table).where(
+                        session_state_table.c.scope == scope
+                    )
+                )
+                if rows:
+                    await connection.execute(insert(session_state_table), rows)
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                f"Не удалось сохранить состояние сессий scope={scope}."
+            ) from error
+
+    async def load_session_scope(self, scope: str) -> dict[str, str]:
+        """возвращает снапшоты активных сессий scope как {key: json}"""
+        statement = select(
+            session_state_table.c.key, session_state_table.c.data
+        ).where(session_state_table.c.scope == scope)
+        try:
+            async with self._engine.connect() as connection:
+                result = await connection.execute(statement)
+                rows = result.fetchall()
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                f"Не удалось загрузить состояние сессий scope={scope}."
+            ) from error
+
+        return {str(row[0]): str(row[1]) for row in rows}
 
     async def _get_user_items(
         self, table: Table, item_column: str, telegram_id: int

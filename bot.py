@@ -10,7 +10,11 @@ from handlers.bunker import create_bunker_router
 from handlers.content_admin import create_content_admin_router
 from handlers.dangerous_group import create_dangerous_group_router
 from handlers.favorites import create_favorites_router
-from handlers.group_session import create_group_session_router
+from handlers.group_session import (
+    GroupSession,
+    create_group_session_router,
+    restore_group_sessions,
+)
 from handlers.inline import create_inline_router
 from handlers.settings import create_settings_router
 from handlers.start import create_start_router
@@ -36,6 +40,9 @@ async def main() -> None:
     storage = SQLiteHistoryStorage(config.database_path)
     await storage.initialize()
 
+    group_sessions: dict[int, GroupSession] = {}
+    await restore_group_sessions(storage, word_games, group_sessions)
+
     bot = Bot(token=config.bot_token)
     dispatcher = Dispatcher()
     dispatcher.include_router(create_start_router(word_games))
@@ -50,7 +57,7 @@ async def main() -> None:
     dispatcher.include_router(create_inline_router(content))
     dispatcher.include_router(create_word_games_router(word_games, storage))
     dispatcher.include_router(
-        create_group_session_router(word_games, storage)
+        create_group_session_router(word_games, storage, group_sessions)
     )
     dispatcher.include_router(create_bunker_router(bunker_content))
     dispatcher.include_router(

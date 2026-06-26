@@ -67,12 +67,14 @@ from handlers.group_session import (  # noqa: E402
     _parse_count,
     _parse_seconds,
     _parse_team,
+    _persist_sessions,
     _pick_word,
     _render_lobby,
     _render_play,
     _render_scores,
     _run_timer,
     create_group_session_router,
+    restore_group_sessions,
 )
 from handlers.inline import create_inline_router  # noqa: E402
 from handlers.settings import create_settings_router  # noqa: E402
@@ -260,7 +262,9 @@ async def _exercise_storage() -> None:
     )
     dispatcher.include_router(create_inline_router(content))
     dispatcher.include_router(create_word_games_router(games, storage))
-    dispatcher.include_router(create_group_session_router(games, storage))
+    dispatcher.include_router(
+        create_group_session_router(games, storage, {})
+    )
     dispatcher.include_router(create_bunker_router(load_bunker_content(DATA_DIR)))
     dispatcher.include_router(create_dangerous_group_router(content, storage))
 
@@ -293,6 +297,33 @@ async def _exercise_storage() -> None:
             for button in row:
                 assert button.callback_data is not None
                 assert len(button.callback_data.encode()) <= 64
+
+    persisted = GroupSession(
+        game=crocodile,
+        host_id=1,
+        team_count=2,
+        turn_seconds=60,
+        current_team=1,
+        started=True,
+        explainer_id=5,
+    )
+    persisted.players = {5: "Аня"}
+    persisted.team_of = {5: 1}
+    persisted.scores = [0, 3]
+    persisted.issued = {"альфа"}
+    await _persist_sessions(storage, {-100: persisted})
+    restored: dict[int, GroupSession] = {}
+    await restore_group_sessions(storage, games, restored)
+    assert set(restored) == {-100}
+    again = restored[-100]
+    assert again.game.game_id == "crocodile"
+    assert again.scores == [0, 3] and again.team_of == {5: 1}
+    assert again.issued == {"альфа"} and again.explainer_id == 5
+    assert again.timer_task is None
+    await storage.replace_session_scope("group", {})
+    empty: dict[int, GroupSession] = {}
+    await restore_group_sessions(storage, games, empty)
+    assert empty == {}
 
 
 def test_storage_and_wiring() -> None:

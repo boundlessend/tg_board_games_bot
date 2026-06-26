@@ -1,13 +1,15 @@
 import asyncio
+import json
 import logging
 import random
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from constants import (
     CB_GS_CANCEL,
@@ -39,6 +41,8 @@ from services.random_generator import WordGame
 
 logger = logging.getLogger(__name__)
 
+_SCOPE = "group"
+
 
 @dataclass
 class GroupSession:
@@ -61,12 +65,29 @@ class GroupSession:
 def create_group_session_router(
     word_games: list[WordGame],
     storage: SQLiteHistoryStorage,
+    sessions: dict[int, GroupSession],
 ) -> Router:
     """создаёт роутер групповых сессий (команды + табло, слова в ЛС)"""
     router = Router()
     group_games = [game for game in word_games if game.game_id != "whoami"]
     games_by_id = {game.game_id: game for game in group_games}
-    sessions: dict[int, GroupSession] = {}
+
+    async def _persist_mw(
+        handler: Callable[
+            [TelegramObject, dict[str, Any]], Awaitable[Any]
+        ],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        """сохраняет снапшот сессий после каждой обработки callback"""
+        result = await handler(event, data)
+        try:
+            await _persist_sessions(storage, sessions)
+        except DatabaseError:
+            logger.exception("session_persist_failed", extra={"scope": _SCOPE})
+        return result
+
+    router.callback_query.middleware(_persist_mw)
 
     @router.message(Command("play"))
     async def handle_play(message: Message) -> None:
@@ -357,6 +378,71 @@ def create_group_session_router(
         await _edit_final(callback, "Игра окончена.\n\n" + _render_scores(session))
 
     return router
+
+
+def _dump_session(session: GroupSession) -> dict[str, Any]:
+    """сериализует групповую сессию в словарь (таймер не сохраняется)"""
+    return {
+        "game_id": session.game.game_id,
+        "host_id": session.host_id,
+        "team_count": session.team_count,
+        "turn_seconds": session.turn_seconds,
+        "current_team": session.current_team,
+        "started": session.started,
+        "explainer_id": session.explainer_id,
+        "players": session.players,
+        "team_of": session.team_of,
+        "scores": session.scores,
+        "issued": list(session.issued),
+    }
+
+
+def _load_session(
+    data: dict[str, Any], games_by_id: dict[str, WordGame]
+) -> GroupSession | None:
+    """восстанавливает сессию из словаря, None если игра пропала из реестра"""
+    game = games_by_id.get(data["game_id"])
+    if game is None:
+        return None
+    # ponytail: таймер хода после рестарта не возрождаем - ход доигрывают вручную
+    return GroupSession(
+        game=game,
+        host_id=data["host_id"],
+        team_count=data["team_count"],
+        turn_seconds=data["turn_seconds"],
+        current_team=data["current_team"],
+        started=data["started"],
+        explainer_id=data["explainer_id"],
+        players={int(key): name for key, name in data["players"].items()},
+        team_of={int(key): team for key, team in data["team_of"].items()},
+        scores=list(data["scores"]),
+        issued=set(data["issued"]),
+    )
+
+
+async def _persist_sessions(
+    storage: SQLiteHistoryStorage, sessions: dict[int, GroupSession]
+) -> None:
+    """сохраняет снапшот всех групповых сессий в хранилище"""
+    items = {
+        str(chat_id): json.dumps(_dump_session(session))
+        for chat_id, session in sessions.items()
+    }
+    await storage.replace_session_scope(_SCOPE, items)
+
+
+async def restore_group_sessions(
+    storage: SQLiteHistoryStorage,
+    word_games: list[WordGame],
+    sessions: dict[int, GroupSession],
+) -> None:
+    """наполняет словарь сессий снапшотами из хранилища при старте"""
+    games_by_id = {game.game_id: game for game in word_games}
+    raw = await storage.load_session_scope(_SCOPE)
+    for key, data in raw.items():
+        session = _load_session(json.loads(data), games_by_id)
+        if session is not None:
+            sessions[int(key)] = session
 
 
 async def _deliver_word(
