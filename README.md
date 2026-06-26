@@ -43,14 +43,25 @@ python bot.py
 
 При первом запуске рядом с кодом создаётся `bot.sqlite3`.
 
-### Docker
+### Docker Compose (рекомендуется)
+
+```bash
+cp .env.example .env    # укажите BOT_TOKEN (и опционально ADMIN_IDS)
+docker compose up -d    # сборка образа и запуск в фоне
+docker compose logs -f  # логи
+docker compose down     # остановить
+```
+
+Compose собирает образ, поднимает бота на long polling и хранит базу в томе `db` (`DATABASE_PATH=/db/bot.sqlite3` зашит в образ), поэтому история выдач переживает перезапуски. Токен передаётся через `env_file`, в образ `.env` не попадает.
+
+### Docker вручную
 
 ```bash
 docker build -t tg-board-games .
 docker run --rm --env-file .env -v tg-board-games-db:/db tg-board-games
 ```
 
-Образ работает от непривилегированного пользователя на long polling, рассчитан на запуск по требованию (под отдельные игры). Путь к базе уже зашит в образ (`DATABASE_PATH=/db/bot.sqlite3`), поэтому достаточно подключить том `-v tg-board-games-db:/db` - история выдач сохраняется между запусками. `--env-file .env` передаёт `BOT_TOKEN` и `ADMIN_IDS` (сам `.env` в образ не попадает). Остановить - `Ctrl+C`. Для постоянного аптайма замените `--rm` на `-d --restart unless-stopped`.
+Образ работает от непривилегированного пользователя. `--rm` подходит для запуска по требованию (под отдельную игру); для постоянного аптайма используйте `-d --restart unless-stopped`.
 
 ## Данные
 

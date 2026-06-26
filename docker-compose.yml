@@ -1,0 +1,11 @@
+services:
+  bot:
+    build: .
+    container_name: tg-board-games
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - db:/db
+
+volumes:
+  db:

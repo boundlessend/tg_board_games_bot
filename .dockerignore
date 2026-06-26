@@ -5,6 +5,7 @@ __pycache__/
 *.py[cod]
 .gitignore
 .dockerignore
+docker-compose.yml
 .env
 .env.example
 .cgcignore
