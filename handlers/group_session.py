@@ -17,8 +17,11 @@ from constants import (
     CB_GS_SCORE,
     CB_GS_SKIP,
     CB_GS_START,
+    CB_GS_TEAMS_PREFIX,
     CB_GS_WORD,
-    TEAM_NAMES,
+    MAX_TEAMS,
+    MIN_TEAMS,
+    team_label,
 )
 from database import DatabaseError, SQLiteHistoryStorage
 from handlers.ui import edit_menu
@@ -38,12 +41,13 @@ class GroupSession:
 
     game: WordGame
     host_id: int
+    team_count: int
     current_team: int
     started: bool
     explainer_id: int | None
     players: dict[int, str] = field(default_factory=dict)
     team_of: dict[int, int] = field(default_factory=dict)
-    scores: list[int] = field(default_factory=lambda: [0] * len(TEAM_NAMES))
+    scores: list[int] = field(default_factory=list)
     issued: set[str] = field(default_factory=set)
 
 
@@ -82,14 +86,16 @@ def create_group_session_router(
         sessions[message.chat.id] = GroupSession(
             game=game,
             host_id=callback.from_user.id,
+            team_count=MIN_TEAMS,
             current_team=0,
             started=False,
             explainer_id=None,
         )
+        session = sessions[message.chat.id]
         await edit_menu(
             callback,
-            _render_lobby(sessions[message.chat.id]),
-            create_session_lobby_keyboard(),
+            _render_lobby(session),
+            create_session_lobby_keyboard(session.team_count),
         )
 
     @router.callback_query(_startswith(CB_GS_JOIN_PREFIX))
@@ -99,7 +105,9 @@ def create_group_session_router(
         if session is None or session.started:
             await callback.answer()
             return
-        team = _parse_team((callback.data or "")[len(CB_GS_JOIN_PREFIX) :])
+        team = _parse_team(
+            (callback.data or "")[len(CB_GS_JOIN_PREFIX) :], session.team_count
+        )
         if team is None:
             await callback.answer()
             return
@@ -108,7 +116,43 @@ def create_group_session_router(
         session.players[user.id] = user.full_name
         session.team_of[user.id] = team
         await edit_menu(
-            callback, _render_lobby(session), create_session_lobby_keyboard()
+            callback,
+            _render_lobby(session),
+            create_session_lobby_keyboard(session.team_count),
+        )
+
+    @router.callback_query(_startswith(CB_GS_TEAMS_PREFIX))
+    async def handle_set_teams(callback: CallbackQuery) -> None:
+        """меняет число команд в лобби (только создатель)"""
+        session, _ = _lookup(callback, sessions)
+        if session is None or session.started:
+            await callback.answer()
+            return
+        if callback.from_user.id != session.host_id:
+            await callback.answer(
+                "Число команд меняет создатель.", show_alert=True
+            )
+            return
+        count = _parse_count(
+            (callback.data or "")[len(CB_GS_TEAMS_PREFIX) :]
+        )
+        if count is None:
+            await callback.answer()
+            return
+
+        orphans = [
+            user_id
+            for user_id, team in session.team_of.items()
+            if team >= count
+        ]
+        for user_id in orphans:
+            session.team_of.pop(user_id, None)
+            session.players.pop(user_id, None)
+        session.team_count = count
+        await edit_menu(
+            callback,
+            _render_lobby(session),
+            create_session_lobby_keyboard(session.team_count),
         )
 
     @router.callback_query(F.data == CB_GS_START)
@@ -126,6 +170,7 @@ def create_group_session_router(
             return
 
         session.started = True
+        session.scores = [0] * session.team_count
         await edit_menu(
             callback, _render_play(session), create_session_play_keyboard()
         )
@@ -219,7 +264,9 @@ def create_group_session_router(
             await callback.answer("Только участники сессии.", show_alert=True)
             return
 
-        session.current_team = (session.current_team + 1) % len(TEAM_NAMES)
+        session.current_team = (
+            session.current_team + 1
+        ) % session.team_count
         session.explainer_id = None
         await edit_menu(
             callback, _render_play(session), create_session_play_keyboard()
@@ -303,15 +350,26 @@ def _lookup(
     return sessions.get(chat_id), chat_id
 
 
-def _parse_team(value: str) -> int | None:
+def _parse_team(value: str, team_count: int) -> int | None:
     """разбирает индекс команды из callback-данных"""
     try:
         team = int(value)
     except ValueError:
         return None
-    if team < 0 or team >= len(TEAM_NAMES):
+    if team < 0 or team >= team_count:
         return None
     return team
+
+
+def _parse_count(value: str) -> int | None:
+    """разбирает число команд из callback-данных"""
+    try:
+        count = int(value)
+    except ValueError:
+        return None
+    if count < MIN_TEAMS or count > MAX_TEAMS:
+        return None
+    return count
 
 
 def _is_group(chat_type: str) -> bool:
@@ -334,23 +392,29 @@ def _pick_word(pool: list[str], issued: set[str]) -> tuple[str, bool]:
 
 def _render_lobby(session: GroupSession) -> str:
     """отображает лобби с составами команд"""
-    lines = [f"Сессия «{session.game.title}». Выбери команду:", ""]
-    for index, name in enumerate(TEAM_NAMES):
+    lines = [
+        f"Сессия «{session.game.title}». Команд: {session.team_count}.",
+        "Выбери команду (число сверху - сколько команд):",
+        "",
+    ]
+    for index in range(session.team_count):
         members = [
             player
             for user_id, player in session.players.items()
             if session.team_of.get(user_id) == index
         ]
-        lines.append(f"{name}: {', '.join(members) if members else '-'}")
+        lines.append(
+            f"{team_label(index)}: {', '.join(members) if members else '-'}"
+        )
     return "\n".join(lines)
 
 
 def _render_play(session: GroupSession) -> str:
     """отображает табло и текущий ход"""
     lines = [f"Игра: {session.game.title}", ""]
-    for index, name in enumerate(TEAM_NAMES):
+    for index in range(session.team_count):
         marker = "  <- ход" if index == session.current_team else ""
-        lines.append(f"{name}: {session.scores[index]}{marker}")
+        lines.append(f"{team_label(index)}: {session.scores[index]}{marker}")
     if session.explainer_id is not None:
         explainer = session.players.get(session.explainer_id, "игрок")
         lines.extend(["", f"Объясняет: {explainer}"])
@@ -360,11 +424,11 @@ def _render_play(session: GroupSession) -> str:
 def _render_scores(session: GroupSession) -> str:
     """отображает итоговое табло с победителем"""
     lines = []
-    for index, name in enumerate(TEAM_NAMES):
-        lines.append(f"{name}: {session.scores[index]}")
+    for index in range(session.team_count):
+        lines.append(f"{team_label(index)}: {session.scores[index]}")
     best = max(session.scores)
     winners = [
-        TEAM_NAMES[index]
+        team_label(index)
         for index, score in enumerate(session.scores)
         if score == best
     ]

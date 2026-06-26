@@ -37,8 +37,17 @@ CB_GS_SCORE = "gs:score"
 CB_GS_SKIP = "gs:skip"
 CB_GS_NEXT = "gs:next"
 CB_GS_FINISH = "gs:finish"
+CB_GS_TEAMS_PREFIX = "gs:teams:"
 
-TEAM_NAMES: tuple[str, ...] = ("Команда 1", "Команда 2")
+MIN_TEAMS = 2
+MAX_TEAMS = 4
+
+
+def team_label(index: int) -> str:
+    """имя команды по индексу (счёт с нуля)"""
+    return f"Команда {index + 1}"
+
+
 SESSION_START_TITLE = "Начать"
 SESSION_CANCEL_TITLE = "Отмена"
 SESSION_WORD_TITLE = "Слово в ЛС"

@@ -55,8 +55,10 @@ from handlers.favorites import create_favorites_router  # noqa: E402
 from handlers.group_session import (  # noqa: E402
     GroupSession,
     _is_group,
+    _parse_count,
     _parse_team,
     _pick_word,
+    _render_lobby,
     _render_play,
     _render_scores,
     create_group_session_router,
@@ -329,12 +331,14 @@ def test_group_session_helpers() -> None:
     session = GroupSession(
         game=games[0],
         host_id=1,
+        team_count=2,
         current_team=0,
         started=True,
         explainer_id=None,
     )
     session.players = {1: "Аня", 2: "Боря"}
     session.team_of = {1: 0, 2: 1}
+    session.scores = [0, 0]
 
     first, reset_first = _pick_word(["a", "b"], session.issued)
     second, reset_second = _pick_word(["a", "b"], session.issued)
@@ -347,9 +351,24 @@ def test_group_session_helpers() -> None:
     assert "Команда 1: 2" in _render_play(session)
     assert "Победитель: Команда 1" in _render_scores(session)
 
-    assert _parse_team("1") == 1
-    assert _parse_team("9") is None
-    assert _parse_team("x") is None
+    assert _parse_team("1", session.team_count) == 1
+    assert _parse_team("9", session.team_count) is None
+    assert _parse_team("x", session.team_count) is None
+    assert _parse_count("3") == 3
+    assert _parse_count("1") is None
+    assert _parse_count("5") is None
+
+    three = GroupSession(
+        game=games[0],
+        host_id=1,
+        team_count=3,
+        current_team=0,
+        started=False,
+        explainer_id=None,
+    )
+    assert "Команд: 3" in _render_lobby(three)
+    assert "Команда 3" in _render_lobby(three)
+
     assert _is_group("supergroup") is True
     assert _is_group("private") is False
 

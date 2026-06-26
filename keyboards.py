@@ -56,6 +56,7 @@ from constants import (
     CB_GS_SCORE,
     CB_GS_SKIP,
     CB_GS_START,
+    CB_GS_TEAMS_PREFIX,
     CB_GS_WORD,
     CB_MAIN_MENU,
     CB_SETTINGS,
@@ -69,6 +70,8 @@ from constants import (
     DANGEROUS_WORDS_GAME_TITLE,
     DANGEROUS_WORDS_HOST_TITLE,
     DANGEROUS_WORDS_PLAYER_TITLE,
+    MAX_TEAMS,
+    MIN_TEAMS,
     NEW_GAME_TITLE,
     RESET_BOSSES_TITLE,
     RESET_CURSES_TITLE,
@@ -81,9 +84,9 @@ from constants import (
     SESSION_START_TITLE,
     SESSION_WORD_TITLE,
     SETTINGS_TITLE,
-    TEAM_NAMES,
     WORD_GAME_GET_TITLE,
     WORD_GAME_RESET_TITLE,
+    team_label,
 )
 from services.random_generator import WordGame
 
@@ -324,17 +327,25 @@ def create_play_games_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def create_session_lobby_keyboard() -> InlineKeyboardMarkup:
-    """создаёт клавиатуру лобби групповой сессии"""
-    rows = [
+def create_session_lobby_keyboard(team_count: int) -> InlineKeyboardMarkup:
+    """создаёт клавиатуру лобби: выбор числа команд и вступление"""
+    count_row = [
+        InlineKeyboardButton(
+            text=(f"[{number}]" if number == team_count else str(number)),
+            callback_data=CB_GS_TEAMS_PREFIX + str(number),
+        )
+        for number in range(MIN_TEAMS, MAX_TEAMS + 1)
+    ]
+    rows = [count_row]
+    rows.extend(
         [
             InlineKeyboardButton(
-                text=f"Вступить: {name}",
+                text=f"Вступить: {team_label(index)}",
                 callback_data=CB_GS_JOIN_PREFIX + str(index),
             )
         ]
-        for index, name in enumerate(TEAM_NAMES)
-    ]
+        for index in range(team_count)
+    )
     rows.append(
         [
             InlineKeyboardButton(
