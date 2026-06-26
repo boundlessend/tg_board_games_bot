@@ -135,7 +135,7 @@ def create_bunker_router(content: BunkerContent) -> Router:
             return
 
         session = BunkerSession(
-            host_id=message.from_user.id if message.from_user else 0,
+            host_id=message.from_user.id,
             board_chat_id=message.chat.id,
         )
         sessions[message.chat.id] = session

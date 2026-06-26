@@ -51,8 +51,6 @@ WORD_GAME_GET_TITLE = "Получить слово"
 WORD_GAME_RESET_TITLE = "Новая игра (сбросить)"
 
 DANGEROUS_WORDS_GAME_ID = "dangerous_words"
-BUNKER_GAME_ID = "bunker"
-BUNKER_GAME_TITLE = "Бункер"
 
 CB_BK_JOIN = "bk:join"
 CB_BK_START = "bk:start"
