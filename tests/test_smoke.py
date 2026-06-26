@@ -101,9 +101,9 @@ def test_config_resolves_database_path() -> None:
 def test_content_loads_and_validates() -> None:
     """контент опасных слов и словесных игр загружается без дублей"""
     content = load_dangerous_words_content(DATA_DIR)
-    assert len(content.words) == 1000
-    assert len(content.curses) == 100
-    assert len(content.bosses) == 100
+    assert len(content.words) == 1600
+    assert len(content.curses) == 200
+    assert len(content.bosses) == 200
 
     games = load_word_games(DATA_DIR)
     assert [game.game_id for game in games] == [
@@ -113,6 +113,7 @@ def test_content_loads_and_validates() -> None:
         "hat",
     ]
     for game in games:
+        assert len(game.words) >= 180
         lowered = [word.lower() for word in game.words]
         assert len(lowered) == len(set(lowered))
 
