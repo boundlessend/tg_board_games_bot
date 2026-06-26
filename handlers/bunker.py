@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from constants import (
@@ -14,6 +14,8 @@ from constants import (
     CB_BK_JOIN,
     CB_BK_NEXT,
     CB_BK_REVEAL,
+    CB_BK_SOLO_CANCEL,
+    CB_BK_SOLO_START,
     CB_BK_START,
     CB_BK_VOTE_PREFIX,
     CB_BK_VOTE_START,
@@ -22,6 +24,7 @@ from constants import (
 from keyboards import (
     create_bunker_lobby_keyboard,
     create_bunker_reveal_keyboard,
+    create_bunker_solo_lobby_keyboard,
     create_bunker_vote_keyboard,
 )
 from services.bunker import (
@@ -66,19 +69,43 @@ class BunkerSession:
     vote_candidates: list[int] = field(default_factory=list)
 
 
+@dataclass
+class SoloLobby:
+    """лёгкое лобби режима «отдельно»: раздаёт карты в личку по коду"""
+
+    host_id: int
+    code: str
+    message_id: int | None = None
+    started: bool = False
+    members: dict[int, str] = field(default_factory=dict)
+
+
 def create_bunker_router(content: BunkerContent) -> Router:
-    """создаёт роутер игры бункер для группового чата"""
+    """создаёт роутер игры бункер: групповой режим и режим «отдельно»"""
     router = Router()
     sessions: dict[int, BunkerSession] = {}
+    lobbies: dict[str, SoloLobby] = {}
+    member_lobby: dict[int, str] = {}
 
     @router.message(Command("bunker"))
     async def handle_bunker(message: Message) -> None:
-        """открывает лобби игры бункер в групповом чате"""
-        if message.chat.type not in ("group", "supergroup"):
-            await message.answer(
-                "Бункер играется в групповом чате. Добавьте бота в беседу "
-                "и отправьте /bunker (режим «отдельно» появится позже)."
+        """в группе открывает партию, в личке - лобби режима «отдельно»"""
+        if message.from_user is None:
+            return
+        if message.chat.type == "private":
+            host_id = message.from_user.id
+            code = _generate_code(set(lobbies))
+            lobby = SoloLobby(host_id=host_id, code=code)
+            lobby.members[host_id] = message.from_user.full_name
+            lobbies[code] = lobby
+            member_lobby[host_id] = code
+            sent = await message.answer(
+                _render_solo_lobby(lobby),
+                reply_markup=create_bunker_solo_lobby_keyboard(),
             )
+            lobby.message_id = sent.message_id
+            return
+        if message.chat.type not in ("group", "supergroup"):
             return
         existing = sessions.get(message.chat.id)
         if existing is not None and existing.phase != "lobby":
@@ -276,6 +303,116 @@ def create_bunker_router(content: BunkerContent) -> Router:
             return
         sessions.pop(session.board_chat_id, None)
         await _replace_board(callback, "Партия в бункер отменена.")
+        await callback.answer()
+
+    @router.message(Command("joinbunker"))
+    async def handle_join_solo(message: Message, command: CommandObject) -> None:
+        """присоединяет игрока к режиму «отдельно» по коду"""
+        if message.chat.type != "private":
+            await message.answer("Команда /joinbunker работает в личке с ботом.")
+            return
+        if message.from_user is None:
+            return
+        code = (command.args or "").strip()
+        lobby = lobbies.get(code)
+        if lobby is None:
+            await message.answer("Нет игры с таким кодом. Уточни код у создателя.")
+            return
+        if lobby.started:
+            await message.answer("Эта партия уже началась.")
+            return
+        member_id = message.from_user.id
+        if member_id in lobby.members:
+            await message.answer("Ты уже в этой игре.")
+            return
+        if len(lobby.members) >= MAX_PLAYERS:
+            await message.answer("Бункер переполнен.")
+            return
+
+        lobby.members[member_id] = message.from_user.full_name
+        member_lobby[member_id] = code
+        await message.answer(
+            f"Ты в убежище. Код {code}. Жди старта от создателя."
+        )
+        bot = message.bot
+        if bot is not None and lobby.message_id is not None:
+            try:
+                await bot.edit_message_text(
+                    _render_solo_lobby(lobby),
+                    chat_id=lobby.host_id,
+                    message_id=lobby.message_id,
+                    reply_markup=create_bunker_solo_lobby_keyboard(),
+                )
+            except TelegramBadRequest:
+                pass
+
+    @router.callback_query(F.data == CB_BK_SOLO_START)
+    async def handle_solo_start(callback: CallbackQuery) -> None:
+        """раздаёт карты участникам режима «отдельно»"""
+        lobby = _lookup_lobby(callback.from_user.id, lobbies, member_lobby)
+        if lobby is None or lobby.started:
+            await callback.answer()
+            return
+        if callback.from_user.id != lobby.host_id:
+            await callback.answer("Начать может создатель.", show_alert=True)
+            return
+        count = len(lobby.members)
+        if count < MIN_PLAYERS or count > MAX_PLAYERS:
+            await callback.answer(
+                f"Нужно от {MIN_PLAYERS} до {MAX_PLAYERS} игроков, сейчас {count}.",
+                show_alert=True,
+            )
+            return
+        bot = callback.bot
+        if bot is None:
+            await callback.answer()
+            return
+
+        hands = deal_hands(content, count)
+        intro = _render_solo_intro(
+            pick_catastrophe(content),
+            pick_pairs(content, ROUNDS_TOTAL),
+            rounds_plan(count),
+            count,
+        )
+        unreachable: list[str] = []
+        for (member_id, name), hand in zip(
+            lobby.members.items(), hands, strict=True
+        ):
+            try:
+                await bot.send_message(member_id, _render_hand(hand))
+                await bot.send_message(member_id, intro)
+            except TelegramForbiddenError:
+                unreachable.append(name)
+        if unreachable:
+            await callback.answer(
+                "Не дошли карты: " + ", ".join(unreachable) + ". Им нужно "
+                "написать боту /start и снова нажать «Начать».",
+                show_alert=True,
+            )
+            return
+
+        lobby.started = True
+        _drop_lobby(lobby, lobbies, member_lobby)
+        await _replace_board(
+            callback,
+            f"Карты розданы {count} игрокам. Играйте: открывайте карты по "
+            "одной каждый раунд и голосуйте за изгнание сами.",
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data == CB_BK_SOLO_CANCEL)
+    async def handle_solo_cancel(callback: CallbackQuery) -> None:
+        """создатель закрывает лобби режима «отдельно»"""
+        lobby = _lookup_lobby(callback.from_user.id, lobbies, member_lobby)
+        if lobby is None:
+            await callback.answer()
+            return
+        if callback.from_user.id != lobby.host_id:
+            await callback.answer("Закрыть может создатель.", show_alert=True)
+            return
+        _drop_lobby(lobby, lobbies, member_lobby)
+        await _replace_board(callback, "Лобби бункера закрыто.")
         await callback.answer()
 
     async def _close_vote(callback: CallbackQuery, session: BunkerSession) -> None:
@@ -551,6 +688,83 @@ def _render_finale(session: BunkerSession) -> str:
     if excluded_names:
         lines.extend(["", "Снаружи остались: " + ", ".join(excluded_names)])
     return "\n".join(lines)
+
+
+def _render_solo_lobby(lobby: SoloLobby) -> str:
+    """отображает лобби режима «отдельно» с кодом и составом"""
+    lines = [
+        f"🏚 Бункер - режим «отдельно». Код: {lobby.code}",
+        "",
+        f"Игроки открывают ЛС с ботом и вводят: /joinbunker {lobby.code}",
+        "",
+        "Состав:",
+    ]
+    lines.extend(f"- {name}" for name in lobby.members.values())
+    lines.extend(
+        [
+            "",
+            f"Нужно {MIN_PLAYERS}-{MAX_PLAYERS} игроков. Карты придут каждому в "
+            "личку. Создатель жмёт «Начать».",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _render_solo_intro(
+    catastrophe: str,
+    pairs: list[tuple[str, str]],
+    plan: RoundsPlan,
+    count: int,
+) -> str:
+    """отображает общий стол режима «отдельно»: катастрофа, план, пары"""
+    lines = [
+        "☢️ КАТАСТРОФА",
+        catastrophe,
+        "",
+        f"Игроков: {count}. Мест в бункере: {plan.seats}. "
+        f"Изгнать: {plan.exclusions}.",
+        "",
+        "📦 Пары бункер+угроза по раундам:",
+    ]
+    for index, (item, threat) in enumerate(pairs, start=1):
+        lines.append(f"{index}. {item} / ⚠️ {threat}")
+    lines.extend(
+        [
+            "",
+            "Раскрывайте по одной карте каждый раунд (суперсила, фобия, "
+            "характер, хобби, багаж; факт - в финале) и голосуйте за изгнание "
+            "сами. После 5 раундов оставшиеся попадают в бункер.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _generate_code(existing: set[str]) -> str:
+    """генерирует уникальный четырёхзначный код лобби"""
+    for _ in range(100):
+        code = str(random.randint(1000, 9999))
+        if code not in existing:
+            return code
+    raise RuntimeError("не удалось сгенерировать код лобби бункера")
+
+
+def _lookup_lobby(
+    user_id: int, lobbies: dict[str, SoloLobby], member_lobby: dict[int, str]
+) -> SoloLobby | None:
+    """находит лобби режима «отдельно» по участнику"""
+    code = member_lobby.get(user_id)
+    return lobbies.get(code) if code is not None else None
+
+
+def _drop_lobby(
+    lobby: SoloLobby,
+    lobbies: dict[str, SoloLobby],
+    member_lobby: dict[int, str],
+) -> None:
+    """удаляет лобби и записи его участников из реестров"""
+    for member_id in lobby.members:
+        member_lobby.pop(member_id, None)
+    lobbies.pop(lobby.code, None)
 
 
 def _startswith(prefix: str) -> Callable[[CallbackQuery], bool]:

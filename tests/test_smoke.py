@@ -22,13 +22,19 @@ from handlers.admin import (  # noqa: E402
 )
 from handlers.bunker import (  # noqa: E402
     BunkerSession,
+    SoloLobby,
     _alive,
     _begin_round,
     _board_keyboard,
+    _drop_lobby,
     _exclude_player,
+    _generate_code,
+    _lookup_lobby,
     _open_vote,
     _render_board,
     _render_finale,
+    _render_solo_intro,
+    _render_solo_lobby,
     create_bunker_router,
 )
 from handlers.content_admin import (  # noqa: E402
@@ -391,3 +397,30 @@ def test_bunker_handler_helpers() -> None:
     assert 2 in session.excluded and session.revealed_count[2] == 5
     assert _alive(session) == [1, 3, 4]
     assert "ФИНАЛ" in _render_finale(session)
+
+
+def test_bunker_solo_lobby_helpers() -> None:
+    """режим «отдельно»: код, реестры и рендер общего стола"""
+    content = load_bunker_content(DATA_DIR)
+    code = _generate_code({"1234", "5678"})
+    assert code.isdigit() and code not in {"1234", "5678"}
+
+    lobbies: dict[str, SoloLobby] = {}
+    member_lobby: dict[int, str] = {}
+    lobby = SoloLobby(host_id=1, code=code)
+    lobby.members = {1: "Аня", 2: "Боря", 3: "Витя", 4: "Гена"}
+    lobbies[code] = lobby
+    for member_id in lobby.members:
+        member_lobby[member_id] = code
+
+    assert _lookup_lobby(2, lobbies, member_lobby) is lobby
+    assert _lookup_lobby(99, lobbies, member_lobby) is None
+    assert code in _render_solo_lobby(lobby) and "Аня" in _render_solo_lobby(lobby)
+
+    intro = _render_solo_intro(
+        "катастрофа", pick_pairs(content, 5), rounds_plan(4), 4
+    )
+    assert "катастрофа" in intro and "Мест в бункере" in intro
+
+    _drop_lobby(lobby, lobbies, member_lobby)
+    assert lobbies == {} and member_lobby == {}

@@ -62,6 +62,8 @@ CB_BK_VOTE_START = "bk:vote_start"
 CB_BK_VOTE_TALLY = "bk:vote_tally"
 CB_BK_NEXT = "bk:next"
 CB_BK_VOTE_PREFIX = "bk:v:"
+CB_BK_SOLO_START = "bk:solo_start"
+CB_BK_SOLO_CANCEL = "bk:solo_cancel"
 
 BUNKER_JOIN_TITLE = "Вступить в бункер"
 BUNKER_START_TITLE = "Начать"

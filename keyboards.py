@@ -22,6 +22,8 @@ from constants import (
     CB_BK_JOIN,
     CB_BK_NEXT,
     CB_BK_REVEAL,
+    CB_BK_SOLO_CANCEL,
+    CB_BK_SOLO_START,
     CB_BK_START,
     CB_BK_VOTE_PREFIX,
     CB_BK_VOTE_START,
@@ -360,6 +362,22 @@ def create_bunker_reveal_keyboard(votes_pending: bool) -> InlineKeyboardMarkup:
                     text=BUNKER_CANCEL_TITLE, callback_data=CB_BK_CANCEL
                 )
             ],
+        ]
+    )
+
+
+def create_bunker_solo_lobby_keyboard() -> InlineKeyboardMarkup:
+    """создаёт клавиатуру лобби режима «отдельно» игры бункер"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=BUNKER_START_TITLE, callback_data=CB_BK_SOLO_START
+                ),
+                InlineKeyboardButton(
+                    text=BUNKER_CANCEL_TITLE, callback_data=CB_BK_SOLO_CANCEL
+                ),
+            ]
         ]
     )
 
