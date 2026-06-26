@@ -18,6 +18,7 @@ from sqlalchemy import (
     union,
     union_all,
 )
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -102,6 +103,13 @@ custom_bosses_table = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("name", String, nullable=False),
     Column("description", String, nullable=False),
+)
+
+user_settings_table = Table(
+    "user_settings",
+    metadata,
+    Column("telegram_id", Integer, primary_key=True),
+    Column("auto_cycle", Integer, nullable=False),
 )
 
 
@@ -480,6 +488,43 @@ class SQLiteHistoryStorage:
             ) from error
 
         return result.rowcount > 0
+
+    async def get_user_auto_cycle(self, telegram_id: int) -> bool:
+        """возвращает настройку авто-цикла словесных игр (по умолчанию вкл)"""
+        statement = select(user_settings_table.c.auto_cycle).where(
+            user_settings_table.c.telegram_id == telegram_id
+        )
+        try:
+            async with self._engine.connect() as connection:
+                result = await connection.execute(statement)
+                value = result.scalar_one_or_none()
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                f"Не удалось получить настройки для telegram_id={telegram_id}."
+            ) from error
+
+        if value is None:
+            return True
+        return bool(value)
+
+    async def set_user_auto_cycle(
+        self, telegram_id: int, enabled: bool
+    ) -> None:
+        """сохраняет настройку авто-цикла словесных игр"""
+        statement = sqlite_insert(user_settings_table).values(
+            telegram_id=telegram_id, auto_cycle=int(enabled)
+        )
+        statement = statement.on_conflict_do_update(
+            index_elements=[user_settings_table.c.telegram_id],
+            set_={"auto_cycle": int(enabled)},
+        )
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(statement)
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                f"Не удалось сохранить настройки для telegram_id={telegram_id}."
+            ) from error
 
     async def get_user_statistics(
         self, telegram_id: int

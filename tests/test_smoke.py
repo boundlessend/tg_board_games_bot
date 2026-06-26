@@ -30,14 +30,17 @@ from handlers.content_admin import (  # noqa: E402
 )
 from handlers.dangerous_words import create_dangerous_words_router  # noqa: E402
 from handlers.inline import create_inline_router  # noqa: E402
+from handlers.settings import create_settings_router  # noqa: E402
 from handlers.start import create_start_router  # noqa: E402
 from handlers.word_games import (  # noqa: E402
     _data_prefix,
     _resolve_game,
+    _select_word_once,
     _select_word_with_cycle,
     create_word_games_router,
 )
 from services.random_generator import (  # noqa: E402
+    EmptyPoolError,
     load_dangerous_words_content,
     load_word_games,
 )
@@ -131,6 +134,20 @@ async def _exercise_storage() -> None:
     _, is_new_cycle = await _select_word_with_cycle(pool, storage, 9, "tg")
     assert is_new_cycle is True
 
+    await _select_word_once(["один"], storage, 11, "once")
+    raised = False
+    try:
+        await _select_word_once(["один"], storage, 11, "once")
+    except EmptyPoolError:
+        raised = True
+    assert raised
+
+    assert await storage.get_user_auto_cycle(11) is True
+    await storage.set_user_auto_cycle(11, False)
+    assert await storage.get_user_auto_cycle(11) is False
+    await storage.set_user_auto_cycle(11, True)
+    assert await storage.get_user_auto_cycle(11) is True
+
     await storage.save_user_word(7, "слово")
     await storage.reset_user_all(7)
     assert await storage.count_user_words(7) == 0
@@ -171,6 +188,7 @@ async def _exercise_storage() -> None:
 
     dispatcher = Dispatcher()
     dispatcher.include_router(create_start_router(games))
+    dispatcher.include_router(create_settings_router(storage))
     dispatcher.include_router(
         create_admin_router(content, storage, frozenset({1}), games)
     )
@@ -187,7 +205,14 @@ async def _exercise_storage() -> None:
         for row in main_menu.inline_keyboard
         for button in row
     ]
-    assert labels == ["Опасные слова", "Крокодил", "Алиас", "Кто я?", "Шляпа"]
+    assert labels == [
+        "Опасные слова",
+        "Крокодил",
+        "Алиас",
+        "Кто я?",
+        "Шляпа",
+        "Настройки",
+    ]
     for keyboard in [main_menu, keyboards.create_word_game_keyboard("crocodile")]:
         for row in keyboard.inline_keyboard:
             for button in row:

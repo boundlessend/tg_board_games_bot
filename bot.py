@@ -9,6 +9,7 @@ from handlers.admin import create_admin_router
 from handlers.content_admin import create_content_admin_router
 from handlers.dangerous_words import create_dangerous_words_router
 from handlers.inline import create_inline_router
+from handlers.settings import create_settings_router
 from handlers.start import create_start_router
 from handlers.word_games import create_word_games_router
 from services.random_generator import (
@@ -33,6 +34,7 @@ async def main() -> None:
     bot = Bot(token=config.bot_token)
     dispatcher = Dispatcher()
     dispatcher.include_router(create_start_router(word_games))
+    dispatcher.include_router(create_settings_router(storage))
     dispatcher.include_router(
         create_admin_router(content, storage, config.admin_ids, word_games)
     )

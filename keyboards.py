@@ -22,6 +22,8 @@ from constants import (
     CB_DW_ROLES,
     CB_DW_WORD,
     CB_MAIN_MENU,
+    CB_SETTINGS,
+    CB_SETTINGS_TOGGLE_CYCLE,
     CB_WG_OPEN_PREFIX,
     CB_WG_RESET_PREFIX,
     CB_WG_WORD_PREFIX,
@@ -35,6 +37,7 @@ from constants import (
     RESET_BOSSES_TITLE,
     RESET_CURSES_TITLE,
     RESET_WORDS_TITLE,
+    SETTINGS_TITLE,
     WORD_GAME_GET_TITLE,
     WORD_GAME_RESET_TITLE,
 )
@@ -61,7 +64,30 @@ def create_main_menu_keyboard(
                 )
             ]
         )
+    rows.append(
+        [InlineKeyboardButton(text=SETTINGS_TITLE, callback_data=CB_SETTINGS)]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def create_settings_keyboard(auto_cycle: bool) -> InlineKeyboardMarkup:
+    """создаёт inline-клавиатуру меню настроек"""
+    state = "вкл" if auto_cycle else "выкл"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"Авто-цикл словесных игр: {state}",
+                    callback_data=CB_SETTINGS_TOGGLE_CYCLE,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=BACK_TO_MAIN_MENU_TITLE, callback_data=CB_MAIN_MENU
+                )
+            ],
+        ]
+    )
 
 
 def create_word_game_keyboard(game_id: str) -> InlineKeyboardMarkup:

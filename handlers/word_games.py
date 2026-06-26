@@ -58,15 +58,21 @@ def create_word_games_router(
                     + await storage.get_custom_words(game.game_id)
                 )
             )
-            word, is_new_cycle = await _select_word_with_cycle(
-                pool, storage, telegram_id, game.game_id
-            )
+            if await storage.get_user_auto_cycle(telegram_id):
+                word, is_new_cycle = await _select_word_with_cycle(
+                    pool, storage, telegram_id, game.game_id
+                )
+            else:
+                word = await _select_word_once(
+                    pool, storage, telegram_id, game.game_id
+                )
+                is_new_cycle = False
             count = await storage.count_user_game_words(
                 telegram_id, game.game_id
             )
         except EmptyPoolError:
             await callback.answer(
-                "Список пуст, напомни Сене его пополнить.", show_alert=True
+                "Слова кончились. Жми «Новая игра».", show_alert=True
             )
             return
         except DatabaseError:
@@ -126,13 +132,13 @@ def _resolve_game(
     return games_by_id.get(data[len(prefix) :])
 
 
-async def _select_word_with_cycle(
+async def _select_word_once(
     pool: list[str],
     storage: SQLiteHistoryStorage,
     telegram_id: int,
     game_id: str,
-) -> tuple[str, bool]:
-    """выбирает слово с авто-сбросом круга после исчерпания"""
+) -> str:
+    """выбирает слово без повтора, бросает EmptyPoolError при исчерпании"""
 
     async def get_seen(user_id: int) -> set[str]:
         return await storage.get_user_game_words(user_id, game_id)
@@ -140,25 +146,31 @@ async def _select_word_with_cycle(
     async def save_seen(user_id: int, word: str) -> None:
         await storage.save_user_game_word(user_id, game_id, word)
 
+    return await select_unique_item(
+        items=pool,
+        get_item_id=_get_string_id,
+        get_seen_ids=get_seen,
+        save_seen_id=save_seen,
+        telegram_id=telegram_id,
+    )
+
+
+async def _select_word_with_cycle(
+    pool: list[str],
+    storage: SQLiteHistoryStorage,
+    telegram_id: int,
+    game_id: str,
+) -> tuple[str, bool]:
+    """выбирает слово с авто-сбросом круга после исчерпания"""
     try:
-        word = await select_unique_item(
-            items=pool,
-            get_item_id=_get_string_id,
-            get_seen_ids=get_seen,
-            save_seen_id=save_seen,
-            telegram_id=telegram_id,
-        )
-        return word, False
+        return await _select_word_once(
+            pool, storage, telegram_id, game_id
+        ), False
     except EmptyPoolError:
         await storage.reset_user_game_words(telegram_id, game_id)
-        word = await select_unique_item(
-            items=pool,
-            get_item_id=_get_string_id,
-            get_seen_ids=get_seen,
-            save_seen_id=save_seen,
-            telegram_id=telegram_id,
-        )
-        return word, True
+        return await _select_word_once(
+            pool, storage, telegram_id, game_id
+        ), True
 
 
 def _get_string_id(item: str) -> str:
