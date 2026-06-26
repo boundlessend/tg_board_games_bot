@@ -22,6 +22,7 @@ from handlers.admin import (  # noqa: E402
     create_admin_router,
 )
 from handlers.bunker import (  # noqa: E402
+    ROUNDS_TOTAL,
     BunkerSession,
     Challenge,
     SoloLobby,
@@ -35,6 +36,7 @@ from handlers.bunker import (  # noqa: E402
     _generate_code,
     _lookup_lobby,
     _open_vote,
+    _persist_bunker,
     _render_board,
     _render_finale,
     _render_solo_intro,
@@ -42,6 +44,7 @@ from handlers.bunker import (  # noqa: E402
     _render_story_verdict,
     _story_survivors,
     create_bunker_router,
+    restore_bunker_sessions,
 )
 from handlers.content_admin import (  # noqa: E402
     _addword_usage,
@@ -267,7 +270,11 @@ async def _exercise_storage() -> None:
     dispatcher.include_router(
         create_group_session_router(games, storage, {})
     )
-    dispatcher.include_router(create_bunker_router(load_bunker_content(DATA_DIR)))
+    dispatcher.include_router(
+        create_bunker_router(
+            load_bunker_content(DATA_DIR), storage, {}, {}, {}
+        )
+    )
     dispatcher.include_router(
         create_dangerous_group_router(content, storage, {})
     )
@@ -347,6 +354,38 @@ async def _exercise_storage() -> None:
     assert dgr.current_word == "тайна" and dgr.boss_revealed is True
     assert dgr.issued_curses == {"c1"}
     await storage.replace_session_scope("dangerous", {})
+
+    bunker_content = load_bunker_content(DATA_DIR)
+    bunker = BunkerSession(host_id=1, board_chat_id=-300)
+    bunker.players = {1: "Аня", 2: "Боря", 3: "Витя", 4: "Гена"}
+    bunker.catastrophe = "потоп"
+    bunker.pairs = pick_pairs(bunker_content, ROUNDS_TOTAL)
+    bunker.plan = rounds_plan(4)
+    bunker.hands = dict(
+        zip(bunker.players, deal_hands(bunker_content, 4), strict=True)
+    )
+    bunker.revealed_count = {pid: 0 for pid in bunker.players}
+    _begin_round(bunker, 1)
+    bunker.excluded = {2}
+    bunker.votes = {1: 2, 3: 2}
+    lobby = SoloLobby(host_id=7, code="4242")
+    lobby.members = {7: "Дима", 8: "Женя"}
+    await _persist_bunker(storage, {-300: bunker}, {"4242": lobby})
+    bk_sessions: dict[int, BunkerSession] = {}
+    bk_lobbies: dict[str, SoloLobby] = {}
+    bk_member: dict[int, str] = {}
+    await restore_bunker_sessions(storage, bk_sessions, bk_lobbies, bk_member)
+    assert set(bk_sessions) == {-300}
+    bk = bk_sessions[-300]
+    assert bk.catastrophe == "потоп"
+    assert bk.plan is not None and bk.plan.seats == rounds_plan(4).seats
+    assert bk.excluded == {2} and bk.votes == {1: 2, 3: 2}
+    assert bk.hands[1].superpower == bunker.hands[1].superpower
+    assert len(bk.pairs) == ROUNDS_TOTAL and isinstance(bk.pairs[0], tuple)
+    assert bk_lobbies["4242"].members == {7: "Дима", 8: "Женя"}
+    assert bk_member == {7: "4242", 8: "4242"}
+    await storage.replace_session_scope("bunker", {})
+    await storage.replace_session_scope("bunker_lobby", {})
 
 
 def test_storage_and_wiring() -> None:

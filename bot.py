@@ -6,7 +6,12 @@ from aiogram import Bot, Dispatcher
 from config import load_config
 from database import SQLiteHistoryStorage
 from handlers.admin import create_admin_router
-from handlers.bunker import create_bunker_router
+from handlers.bunker import (
+    BunkerSession,
+    SoloLobby,
+    create_bunker_router,
+    restore_bunker_sessions,
+)
 from handlers.content_admin import create_content_admin_router
 from handlers.dangerous_group import (
     DangerousGroup,
@@ -48,6 +53,12 @@ async def main() -> None:
     await restore_group_sessions(storage, word_games, group_sessions)
     dangerous_sessions: dict[int, DangerousGroup] = {}
     await restore_dangerous_sessions(storage, dangerous_sessions)
+    bunker_sessions: dict[int, BunkerSession] = {}
+    bunker_lobbies: dict[str, SoloLobby] = {}
+    bunker_member_lobby: dict[int, str] = {}
+    await restore_bunker_sessions(
+        storage, bunker_sessions, bunker_lobbies, bunker_member_lobby
+    )
 
     bot = Bot(token=config.bot_token)
     dispatcher = Dispatcher()
@@ -65,7 +76,15 @@ async def main() -> None:
     dispatcher.include_router(
         create_group_session_router(word_games, storage, group_sessions)
     )
-    dispatcher.include_router(create_bunker_router(bunker_content))
+    dispatcher.include_router(
+        create_bunker_router(
+            bunker_content,
+            storage,
+            bunker_sessions,
+            bunker_lobbies,
+            bunker_member_lobby,
+        )
+    )
     dispatcher.include_router(
         create_dangerous_group_router(content, storage, dangerous_sessions)
     )

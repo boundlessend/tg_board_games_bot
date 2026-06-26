@@ -1,12 +1,19 @@
+import json
 import logging
 import random
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
+from dataclasses import asdict, dataclass, field
+from typing import Any
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandObject
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    Message,
+    TelegramObject,
+)
 
 from constants import (
     BUNKER_CARD_LABELS,
@@ -26,6 +33,7 @@ from constants import (
     CB_BK_VOTE_START,
     CB_BK_VOTE_TALLY,
 )
+from database import DatabaseError, SQLiteHistoryStorage
 from keyboards import (
     create_bunker_lobby_keyboard,
     create_bunker_reveal_keyboard,
@@ -50,6 +58,8 @@ from services.bunker import (
 logger = logging.getLogger(__name__)
 
 ROUNDS_TOTAL = 5
+_SCOPE = "bunker"
+_LOBBY_SCOPE = "bunker_lobby"
 
 
 @dataclass(frozen=True)
@@ -101,12 +111,33 @@ class SoloLobby:
     members: dict[int, str] = field(default_factory=dict)
 
 
-def create_bunker_router(content: BunkerContent) -> Router:
+def create_bunker_router(
+    content: BunkerContent,
+    storage: SQLiteHistoryStorage,
+    sessions: dict[int, BunkerSession],
+    lobbies: dict[str, SoloLobby],
+    member_lobby: dict[int, str],
+) -> Router:
     """создаёт роутер игры бункер: групповой режим и режим «отдельно»"""
     router = Router()
-    sessions: dict[int, BunkerSession] = {}
-    lobbies: dict[str, SoloLobby] = {}
-    member_lobby: dict[int, str] = {}
+
+    async def _persist_mw(
+        handler: Callable[
+            [TelegramObject, dict[str, Any]], Awaitable[Any]
+        ],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        """сохраняет снапшот партий и лобби после каждой обработки"""
+        result = await handler(event, data)
+        try:
+            await _persist_bunker(storage, sessions, lobbies)
+        except DatabaseError:
+            logger.exception("session_persist_failed", extra={"scope": _SCOPE})
+        return result
+
+    router.callback_query.middleware(_persist_mw)
+    router.message.middleware(_persist_mw)
 
     async def _open_group_lobby(target: Message, host_id: int) -> None:
         """создаёт групповое лобби бункера в чате target"""
@@ -629,6 +660,150 @@ def create_bunker_router(content: BunkerContent) -> Router:
         await callback.answer()
 
     return router
+
+
+def _dump_plan(plan: RoundsPlan) -> dict[str, Any]:
+    """сериализует план раундов"""
+    return {
+        "votes_per_round": list(plan.votes_per_round),
+        "exclusions": plan.exclusions,
+        "seats": plan.seats,
+    }
+
+
+def _load_plan(data: dict[str, Any]) -> RoundsPlan:
+    """восстанавливает план раундов из словаря"""
+    votes = data["votes_per_round"]
+    return RoundsPlan(
+        votes_per_round=(votes[0], votes[1], votes[2], votes[3], votes[4]),
+        exclusions=data["exclusions"],
+        seats=data["seats"],
+    )
+
+
+def _dump_bunker(session: BunkerSession) -> dict[str, Any]:
+    """сериализует партию бункера в словарь"""
+    return {
+        "host_id": session.host_id,
+        "board_chat_id": session.board_chat_id,
+        "phase": session.phase,
+        "board_message_id": session.board_message_id,
+        "story_mode": session.story_mode,
+        "catastrophe": session.catastrophe,
+        "pairs": [list(pair) for pair in session.pairs],
+        "plan": _dump_plan(session.plan) if session.plan is not None else None,
+        "round_no": session.round_no,
+        "pairs_open": session.pairs_open,
+        "votes_pending": session.votes_pending,
+        "revote": session.revote,
+        "players": session.players,
+        "hands": {
+            str(pid): asdict(hand) for pid, hand in session.hands.items()
+        },
+        "revealed_count": session.revealed_count,
+        "excluded": list(session.excluded),
+        "votes": session.votes,
+        "vote_candidates": session.vote_candidates,
+        "survivors_bunker": session.survivors_bunker,
+        "survivors_exiles": session.survivors_exiles,
+        "finale_queue": [asdict(ch) for ch in session.finale_queue],
+        "finale_index": session.finale_index,
+        "story_votes": session.story_votes,
+    }
+
+
+def _load_bunker(data: dict[str, Any]) -> BunkerSession:
+    """восстанавливает партию бункера из словаря"""
+    session = BunkerSession(
+        host_id=data["host_id"], board_chat_id=data["board_chat_id"]
+    )
+    session.phase = data["phase"]
+    session.board_message_id = data["board_message_id"]
+    session.story_mode = data["story_mode"]
+    session.catastrophe = data["catastrophe"]
+    session.pairs = [(pair[0], pair[1]) for pair in data["pairs"]]
+    plan = data["plan"]
+    session.plan = _load_plan(plan) if plan is not None else None
+    session.round_no = data["round_no"]
+    session.pairs_open = data["pairs_open"]
+    session.votes_pending = data["votes_pending"]
+    session.revote = data["revote"]
+    session.players = {int(k): v for k, v in data["players"].items()}
+    session.hands = {
+        int(k): PlayerHand(**hand) for k, hand in data["hands"].items()
+    }
+    session.revealed_count = {
+        int(k): v for k, v in data["revealed_count"].items()
+    }
+    session.excluded = {int(pid) for pid in data["excluded"]}
+    session.votes = {int(k): v for k, v in data["votes"].items()}
+    session.vote_candidates = list(data["vote_candidates"])
+    session.survivors_bunker = list(data["survivors_bunker"])
+    session.survivors_exiles = list(data["survivors_exiles"])
+    session.finale_queue = [Challenge(**ch) for ch in data["finale_queue"]]
+    session.finale_index = data["finale_index"]
+    session.story_votes = {int(k): v for k, v in data["story_votes"].items()}
+    return session
+
+
+def _dump_lobby(lobby: SoloLobby) -> dict[str, Any]:
+    """сериализует лобби режима «отдельно»"""
+    return {
+        "host_id": lobby.host_id,
+        "code": lobby.code,
+        "message_id": lobby.message_id,
+        "started": lobby.started,
+        "members": lobby.members,
+    }
+
+
+def _load_lobby(data: dict[str, Any]) -> SoloLobby:
+    """восстанавливает лобби режима «отдельно» из словаря"""
+    lobby = SoloLobby(host_id=data["host_id"], code=data["code"])
+    lobby.message_id = data["message_id"]
+    lobby.started = data["started"]
+    lobby.members = {int(k): v for k, v in data["members"].items()}
+    return lobby
+
+
+async def _persist_bunker(
+    storage: SQLiteHistoryStorage,
+    sessions: dict[int, BunkerSession],
+    lobbies: dict[str, SoloLobby],
+) -> None:
+    """сохраняет снапшот партий бункера и лобби режима «отдельно»"""
+    await storage.replace_session_scope(
+        _SCOPE,
+        {
+            str(chat_id): json.dumps(_dump_bunker(session))
+            for chat_id, session in sessions.items()
+        },
+    )
+    await storage.replace_session_scope(
+        _LOBBY_SCOPE,
+        {
+            lobby.code: json.dumps(_dump_lobby(lobby))
+            for lobby in lobbies.values()
+        },
+    )
+
+
+async def restore_bunker_sessions(
+    storage: SQLiteHistoryStorage,
+    sessions: dict[int, BunkerSession],
+    lobbies: dict[str, SoloLobby],
+    member_lobby: dict[int, str],
+) -> None:
+    """наполняет партии, лобби и индекс участников из хранилища при старте"""
+    raw_sessions = await storage.load_session_scope(_SCOPE)
+    for key, data in raw_sessions.items():
+        sessions[int(key)] = _load_bunker(json.loads(data))
+    raw_lobbies = await storage.load_session_scope(_LOBBY_SCOPE)
+    for data in raw_lobbies.values():
+        lobby = _load_lobby(json.loads(data))
+        lobbies[lobby.code] = lobby
+        for member_id in lobby.members:
+            member_lobby[member_id] = lobby.code
 
 
 def _begin_round(session: BunkerSession, round_no: int) -> None:
