@@ -8,6 +8,7 @@ from constants import (
     BACK_TO_DANGEROUS_WORDS_TITLE,
     BACK_TO_MAIN_MENU_TITLE,
     BUNKER_CANCEL_TITLE,
+    BUNKER_GAME_TITLE,
     BUNKER_JOIN_TITLE,
     BUNKER_MODE_BASE_TITLE,
     BUNKER_MODE_STORY_TITLE,
@@ -25,6 +26,7 @@ from constants import (
     CB_BK_CANCEL,
     CB_BK_JOIN,
     CB_BK_NEXT,
+    CB_BK_OPEN,
     CB_BK_REVEAL,
     CB_BK_MODE,
     CB_BK_SOLO_CANCEL,
@@ -86,28 +88,49 @@ from constants import (
 from services.random_generator import WordGame
 
 
-def create_main_menu_keyboard(
+def create_private_menu_keyboard(
     word_games: list[WordGame],
 ) -> InlineKeyboardMarkup:
-    """создаёт inline-клавиатуру главного меню со списком игр"""
+    """создаёт меню личного чата: «Кто я» и настройки"""
     rows = [
+        [
+            InlineKeyboardButton(
+                text=game.title,
+                callback_data=CB_WG_OPEN_PREFIX + game.game_id,
+            )
+        ]
+        for game in word_games
+        if game.game_id == "whoami"
+    ]
+    rows.append(
+        [InlineKeyboardButton(text=SETTINGS_TITLE, callback_data=CB_SETTINGS)]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def create_group_menu_keyboard(
+    word_games: list[WordGame],
+) -> InlineKeyboardMarkup:
+    """создаёт меню беседы: командные словесные игры, опасные слова и бункер"""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=game.title,
+                callback_data=CB_GS_NEW_PREFIX + game.game_id,
+            )
+        ]
+        for game in word_games
+        if game.game_id != "whoami"
+    ]
+    rows.append(
         [
             InlineKeyboardButton(
                 text=DANGEROUS_WORDS_GAME_TITLE, callback_data=CB_DW_ROLES
             )
         ]
-    ]
-    for game in word_games:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=game.title,
-                    callback_data=CB_WG_OPEN_PREFIX + game.game_id,
-                )
-            ]
-        )
+    )
     rows.append(
-        [InlineKeyboardButton(text=SETTINGS_TITLE, callback_data=CB_SETTINGS)]
+        [InlineKeyboardButton(text=BUNKER_GAME_TITLE, callback_data=CB_BK_OPEN)]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

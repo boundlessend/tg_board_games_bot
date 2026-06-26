@@ -14,6 +14,7 @@ from constants import (
     CB_BK_JOIN,
     CB_BK_MODE,
     CB_BK_NEXT,
+    CB_BK_OPEN,
     CB_BK_REVEAL,
     CB_BK_SOLO_CANCEL,
     CB_BK_SOLO_START,
@@ -107,6 +108,21 @@ def create_bunker_router(content: BunkerContent) -> Router:
     lobbies: dict[str, SoloLobby] = {}
     member_lobby: dict[int, str] = {}
 
+    async def _open_group_lobby(target: Message, host_id: int) -> None:
+        """создаёт групповое лобби бункера в чате target"""
+        existing = sessions.get(target.chat.id)
+        if existing is not None and existing.phase != "lobby":
+            await target.answer(
+                "Партия уже идёт. Создатель может нажать «Отменить игру»."
+            )
+            return
+        session = BunkerSession(host_id=host_id, board_chat_id=target.chat.id)
+        sessions[target.chat.id] = session
+        sent = await target.answer(
+            _render_board(session), reply_markup=_board_keyboard(session)
+        )
+        session.board_message_id = sent.message_id
+
     @router.message(Command("bunker"))
     async def handle_bunker(message: Message) -> None:
         """в группе открывает партию, в личке - лобби режима «отдельно»"""
@@ -127,22 +143,22 @@ def create_bunker_router(content: BunkerContent) -> Router:
             return
         if message.chat.type not in ("group", "supergroup"):
             return
-        existing = sessions.get(message.chat.id)
-        if existing is not None and existing.phase != "lobby":
-            await message.answer(
-                "Партия уже идёт. Создатель может нажать «Отменить игру»."
+        await _open_group_lobby(message, message.from_user.id)
+
+    @router.callback_query(F.data == CB_BK_OPEN)
+    async def handle_open(callback: CallbackQuery) -> None:
+        """открывает лобби бункера из группового меню"""
+        message = callback.message
+        if not isinstance(message, Message):
+            await callback.answer()
+            return
+        if message.chat.type not in ("group", "supergroup"):
+            await callback.answer(
+                "«Бункер» доступен в беседе.", show_alert=True
             )
             return
-
-        session = BunkerSession(
-            host_id=message.from_user.id,
-            board_chat_id=message.chat.id,
-        )
-        sessions[message.chat.id] = session
-        sent = await message.answer(
-            _render_board(session), reply_markup=_board_keyboard(session)
-        )
-        session.board_message_id = sent.message_id
+        await _open_group_lobby(message, callback.from_user.id)
+        await callback.answer()
 
     @router.callback_query(F.data == CB_BK_JOIN)
     async def handle_join(callback: CallbackQuery) -> None:

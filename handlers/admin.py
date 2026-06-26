@@ -20,7 +20,7 @@ from constants import (
     WORDS_LIMIT,
 )
 from database import DatabaseError, SQLiteHistoryStorage, iso_days_ago
-from keyboards import create_admin_keyboard, create_main_menu_keyboard
+from keyboards import create_admin_keyboard, create_private_menu_keyboard
 from services.random_generator import (
     Boss,
     Curse,
@@ -138,7 +138,7 @@ def create_admin_router(
             try:
                 await message.edit_text(
                     ADMIN_CLOSED_TEXT,
-                    reply_markup=create_main_menu_keyboard(word_games),
+                    reply_markup=create_private_menu_keyboard(word_games),
                 )
             except TelegramBadRequest:
                 pass

@@ -52,6 +52,7 @@ WORD_GAME_RESET_TITLE = "Новая игра (сбросить)"
 
 DANGEROUS_WORDS_GAME_ID = "dangerous_words"
 
+CB_BK_OPEN = "bk:open"
 CB_BK_JOIN = "bk:join"
 CB_BK_START = "bk:start"
 CB_BK_CANCEL = "bk:cancel"
@@ -72,6 +73,7 @@ BUNKER_MODE_STORY_TITLE = "Режим: история выживания"
 BUNKER_STORY_YES_TITLE = "Справились"
 BUNKER_STORY_NO_TITLE = "Не справились"
 
+BUNKER_GAME_TITLE = "Бункер"
 BUNKER_JOIN_TITLE = "Вступить в бункер"
 BUNKER_START_TITLE = "Начать"
 BUNKER_CANCEL_TITLE = "Отменить игру"

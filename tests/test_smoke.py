@@ -251,20 +251,31 @@ async def _exercise_storage() -> None:
     dispatcher.include_router(create_bunker_router(load_bunker_content(DATA_DIR)))
     dispatcher.include_router(create_dangerous_words_router(content, storage))
 
-    main_menu = keyboards.create_main_menu_keyboard(games)
-    labels = [
+    private_menu = keyboards.create_private_menu_keyboard(games)
+    private_labels = [
         button.text
-        for row in main_menu.inline_keyboard
+        for row in private_menu.inline_keyboard
         for button in row
     ]
-    assert labels == [
-        "Опасные слова",
+    assert private_labels == ["Кто я?", "Настройки"]
+
+    group_menu = keyboards.create_group_menu_keyboard(games)
+    group_labels = [
+        button.text
+        for row in group_menu.inline_keyboard
+        for button in row
+    ]
+    assert group_labels == [
         "Крокодил",
         "Алиас",
-        "Кто я?",
-        "Настройки",
+        "Опасные слова",
+        "Бункер",
     ]
-    for keyboard in [main_menu, keyboards.create_word_game_keyboard("crocodile")]:
+    for keyboard in [
+        private_menu,
+        group_menu,
+        keyboards.create_word_game_keyboard("crocodile"),
+    ]:
         for row in keyboard.inline_keyboard:
             for button in row:
                 assert button.callback_data is not None
