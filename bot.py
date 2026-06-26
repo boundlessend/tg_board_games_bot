@@ -8,6 +8,7 @@ from database import SQLiteHistoryStorage
 from handlers.admin import create_admin_router
 from handlers.content_admin import create_content_admin_router
 from handlers.dangerous_words import create_dangerous_words_router
+from handlers.favorites import create_favorites_router
 from handlers.inline import create_inline_router
 from handlers.settings import create_settings_router
 from handlers.start import create_start_router
@@ -35,6 +36,7 @@ async def main() -> None:
     dispatcher = Dispatcher()
     dispatcher.include_router(create_start_router(word_games))
     dispatcher.include_router(create_settings_router(storage))
+    dispatcher.include_router(create_favorites_router(storage))
     dispatcher.include_router(
         create_admin_router(content, storage, config.admin_ids, word_games)
     )

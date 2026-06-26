@@ -93,6 +93,7 @@ def create_dangerous_words_router(
                 save_seen_id=storage.save_user_word,
                 telegram_id=telegram_id,
             )
+            await storage.set_last_word(telegram_id, word)
             word_count = await storage.count_user_words(telegram_id)
         except EmptyPoolError:
             await callback.answer(

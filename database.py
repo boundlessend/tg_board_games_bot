@@ -112,6 +112,22 @@ user_settings_table = Table(
     Column("auto_cycle", Integer, nullable=False),
 )
 
+user_last_word_table = Table(
+    "user_last_word",
+    metadata,
+    Column("telegram_id", Integer, primary_key=True),
+    Column("word", String, nullable=False),
+)
+
+favorites_table = Table(
+    "favorites",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("telegram_id", Integer, nullable=False),
+    Column("word", String, nullable=False),
+    UniqueConstraint("telegram_id", "word"),
+)
+
 
 _HISTORY_TABLE_NAMES: tuple[str, ...] = (
     USER_WORDS_TABLE_NAME,
@@ -524,6 +540,87 @@ class SQLiteHistoryStorage:
         except SQLAlchemyError as error:
             raise DatabaseError(
                 f"Не удалось сохранить настройки для telegram_id={telegram_id}."
+            ) from error
+
+    async def set_last_word(self, telegram_id: int, word: str) -> None:
+        """запоминает последнее выданное пользователю слово"""
+        statement = sqlite_insert(user_last_word_table).values(
+            telegram_id=telegram_id, word=word
+        )
+        statement = statement.on_conflict_do_update(
+            index_elements=[user_last_word_table.c.telegram_id],
+            set_={"word": word},
+        )
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(statement)
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                f"Не удалось сохранить последнее слово для telegram_id={telegram_id}."
+            ) from error
+
+    async def get_last_word(self, telegram_id: int) -> str | None:
+        """возвращает последнее выданное пользователю слово"""
+        statement = select(user_last_word_table.c.word).where(
+            user_last_word_table.c.telegram_id == telegram_id
+        )
+        try:
+            async with self._engine.connect() as connection:
+                result = await connection.execute(statement)
+                value = result.scalar_one_or_none()
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                f"Не удалось получить последнее слово для telegram_id={telegram_id}."
+            ) from error
+
+        return None if value is None else str(value)
+
+    async def add_favorite(self, telegram_id: int, word: str) -> bool:
+        """добавляет слово в избранное, возвращает False при дубле"""
+        statement = insert(favorites_table).values(
+            telegram_id=telegram_id, word=word
+        )
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(statement)
+        except IntegrityError:
+            return False
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                f"Не удалось добавить в избранное для telegram_id={telegram_id}."
+            ) from error
+
+        return True
+
+    async def get_favorites(self, telegram_id: int) -> list[str]:
+        """возвращает избранные слова пользователя"""
+        statement = (
+            select(favorites_table.c.word)
+            .where(favorites_table.c.telegram_id == telegram_id)
+            .order_by(favorites_table.c.id)
+        )
+        try:
+            async with self._engine.connect() as connection:
+                result = await connection.execute(statement)
+                rows = result.fetchall()
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                f"Не удалось получить избранное для telegram_id={telegram_id}."
+            ) from error
+
+        return [str(row[0]) for row in rows]
+
+    async def clear_favorites(self, telegram_id: int) -> None:
+        """очищает избранное пользователя"""
+        statement = delete(favorites_table).where(
+            favorites_table.c.telegram_id == telegram_id
+        )
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(statement)
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                f"Не удалось очистить избранное для telegram_id={telegram_id}."
             ) from error
 
     async def get_user_statistics(

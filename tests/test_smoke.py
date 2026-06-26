@@ -29,6 +29,7 @@ from handlers.content_admin import (  # noqa: E402
     create_content_admin_router,
 )
 from handlers.dangerous_words import create_dangerous_words_router  # noqa: E402
+from handlers.favorites import create_favorites_router  # noqa: E402
 from handlers.inline import create_inline_router  # noqa: E402
 from handlers.settings import create_settings_router  # noqa: E402
 from handlers.start import create_start_router  # noqa: E402
@@ -148,6 +149,15 @@ async def _exercise_storage() -> None:
     await storage.set_user_auto_cycle(11, True)
     assert await storage.get_user_auto_cycle(11) is True
 
+    await storage.set_last_word(3, "избранное_слово")
+    assert await storage.get_last_word(3) == "избранное_слово"
+    assert await storage.get_last_word(999) is None
+    assert await storage.add_favorite(3, "избранное_слово") is True
+    assert await storage.add_favorite(3, "избранное_слово") is False
+    assert await storage.get_favorites(3) == ["избранное_слово"]
+    await storage.clear_favorites(3)
+    assert await storage.get_favorites(3) == []
+
     await storage.save_user_word(7, "слово")
     await storage.reset_user_all(7)
     assert await storage.count_user_words(7) == 0
@@ -189,6 +199,7 @@ async def _exercise_storage() -> None:
     dispatcher = Dispatcher()
     dispatcher.include_router(create_start_router(games))
     dispatcher.include_router(create_settings_router(storage))
+    dispatcher.include_router(create_favorites_router(storage))
     dispatcher.include_router(
         create_admin_router(content, storage, frozenset({1}), games)
     )

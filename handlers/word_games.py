@@ -67,6 +67,7 @@ def create_word_games_router(
                     pool, storage, telegram_id, game.game_id
                 )
                 is_new_cycle = False
+            await storage.set_last_word(telegram_id, word)
             count = await storage.count_user_game_words(
                 telegram_id, game.game_id
             )
