@@ -30,6 +30,15 @@ from handlers.content_admin import (  # noqa: E402
 )
 from handlers.dangerous_words import create_dangerous_words_router  # noqa: E402
 from handlers.favorites import create_favorites_router  # noqa: E402
+from handlers.group_session import (  # noqa: E402
+    GroupSession,
+    _is_group,
+    _parse_team,
+    _pick_word,
+    _render_play,
+    _render_scores,
+    create_group_session_router,
+)
 from handlers.inline import create_inline_router  # noqa: E402
 from handlers.settings import create_settings_router  # noqa: E402
 from handlers.start import create_start_router  # noqa: E402
@@ -208,6 +217,7 @@ async def _exercise_storage() -> None:
     )
     dispatcher.include_router(create_inline_router(content))
     dispatcher.include_router(create_word_games_router(games, storage))
+    dispatcher.include_router(create_group_session_router(games, storage))
     dispatcher.include_router(create_dangerous_words_router(content, storage))
 
     main_menu = keyboards.create_main_menu_keyboard(games)
@@ -270,3 +280,34 @@ async def _exercise_backup_restore() -> None:
 def test_backup_restore() -> None:
     """прогоняет проверки бэкапа/восстановления"""
     asyncio.run(_exercise_backup_restore())
+
+
+def test_group_session_helpers() -> None:
+    """проверяет чистую логику групповой сессии"""
+    games = load_word_games(DATA_DIR)
+    session = GroupSession(
+        game=games[0],
+        host_id=1,
+        current_team=0,
+        started=True,
+        explainer_id=None,
+    )
+    session.players = {1: "Аня", 2: "Боря"}
+    session.team_of = {1: 0, 2: 1}
+
+    first, reset_first = _pick_word(["a", "b"], session.issued)
+    second, reset_second = _pick_word(["a", "b"], session.issued)
+    assert {first, second} == {"a", "b"}
+    assert reset_first is False and reset_second is False
+    _, reset_third = _pick_word(["a", "b"], session.issued)
+    assert reset_third is True
+
+    session.scores[0] = 2
+    assert "Команда 1: 2" in _render_play(session)
+    assert "Победитель: Команда 1" in _render_scores(session)
+
+    assert _parse_team("1") == 1
+    assert _parse_team("9") is None
+    assert _parse_team("x") is None
+    assert _is_group("supergroup") is True
+    assert _is_group("private") is False

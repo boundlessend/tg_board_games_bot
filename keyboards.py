@@ -21,6 +21,15 @@ from constants import (
     CB_DW_RESET_WORDS,
     CB_DW_ROLES,
     CB_DW_WORD,
+    CB_GS_CANCEL,
+    CB_GS_FINISH,
+    CB_GS_JOIN_PREFIX,
+    CB_GS_NEW_PREFIX,
+    CB_GS_NEXT,
+    CB_GS_SCORE,
+    CB_GS_SKIP,
+    CB_GS_START,
+    CB_GS_WORD,
     CB_MAIN_MENU,
     CB_SETTINGS,
     CB_SETTINGS_TOGGLE_CYCLE,
@@ -37,7 +46,15 @@ from constants import (
     RESET_BOSSES_TITLE,
     RESET_CURSES_TITLE,
     RESET_WORDS_TITLE,
+    SESSION_CANCEL_TITLE,
+    SESSION_FINISH_TITLE,
+    SESSION_NEXT_TITLE,
+    SESSION_SCORE_TITLE,
+    SESSION_SKIP_TITLE,
+    SESSION_START_TITLE,
+    SESSION_WORD_TITLE,
     SETTINGS_TITLE,
+    TEAM_NAMES,
     WORD_GAME_GET_TITLE,
     WORD_GAME_RESET_TITLE,
 )
@@ -237,6 +254,77 @@ def create_admin_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text=ADMIN_CLOSE_TITLE, callback_data=CB_ADMIN_CLOSE
+                )
+            ],
+        ]
+    )
+
+
+def create_play_games_keyboard(
+    word_games: list[WordGame],
+) -> InlineKeyboardMarkup:
+    """создаёт клавиатуру выбора игры для групповой сессии"""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=game.title,
+                callback_data=CB_GS_NEW_PREFIX + game.game_id,
+            )
+        ]
+        for game in word_games
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def create_session_lobby_keyboard() -> InlineKeyboardMarkup:
+    """создаёт клавиатуру лобби групповой сессии"""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"Вступить: {name}",
+                callback_data=CB_GS_JOIN_PREFIX + str(index),
+            )
+        ]
+        for index, name in enumerate(TEAM_NAMES)
+    ]
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text=SESSION_START_TITLE, callback_data=CB_GS_START
+            ),
+            InlineKeyboardButton(
+                text=SESSION_CANCEL_TITLE, callback_data=CB_GS_CANCEL
+            ),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def create_session_play_keyboard() -> InlineKeyboardMarkup:
+    """создаёт клавиатуру управления групповой сессией"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=SESSION_WORD_TITLE, callback_data=CB_GS_WORD
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=SESSION_SCORE_TITLE, callback_data=CB_GS_SCORE
+                ),
+                InlineKeyboardButton(
+                    text=SESSION_SKIP_TITLE, callback_data=CB_GS_SKIP
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=SESSION_NEXT_TITLE, callback_data=CB_GS_NEXT
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=SESSION_FINISH_TITLE, callback_data=CB_GS_FINISH
                 )
             ],
         ]

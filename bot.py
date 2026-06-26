@@ -9,6 +9,7 @@ from handlers.admin import create_admin_router
 from handlers.content_admin import create_content_admin_router
 from handlers.dangerous_words import create_dangerous_words_router
 from handlers.favorites import create_favorites_router
+from handlers.group_session import create_group_session_router
 from handlers.inline import create_inline_router
 from handlers.settings import create_settings_router
 from handlers.start import create_start_router
@@ -45,6 +46,9 @@ async def main() -> None:
     )
     dispatcher.include_router(create_inline_router(content))
     dispatcher.include_router(create_word_games_router(word_games, storage))
+    dispatcher.include_router(
+        create_group_session_router(word_games, storage)
+    )
     dispatcher.include_router(create_dangerous_words_router(content, storage))
 
     await dispatcher.start_polling(bot)

@@ -28,6 +28,25 @@ CB_WG_OPEN_PREFIX = "wg:open:"
 CB_WG_WORD_PREFIX = "wg:word:"
 CB_WG_RESET_PREFIX = "wg:reset:"
 
+CB_GS_NEW_PREFIX = "gs:new:"
+CB_GS_JOIN_PREFIX = "gs:join:"
+CB_GS_START = "gs:start"
+CB_GS_CANCEL = "gs:cancel"
+CB_GS_WORD = "gs:word"
+CB_GS_SCORE = "gs:score"
+CB_GS_SKIP = "gs:skip"
+CB_GS_NEXT = "gs:next"
+CB_GS_FINISH = "gs:finish"
+
+TEAM_NAMES: tuple[str, ...] = ("Команда 1", "Команда 2")
+SESSION_START_TITLE = "Начать"
+SESSION_CANCEL_TITLE = "Отмена"
+SESSION_WORD_TITLE = "Слово в ЛС"
+SESSION_SCORE_TITLE = "Угадали +1"
+SESSION_SKIP_TITLE = "Пропустить"
+SESSION_NEXT_TITLE = "Передать ход"
+SESSION_FINISH_TITLE = "Завершить"
+
 WORD_GAME_GET_TITLE = "Получить слово"
 WORD_GAME_RESET_TITLE = "Новая игра (сбросить)"
 
