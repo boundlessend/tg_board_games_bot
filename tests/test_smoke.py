@@ -49,6 +49,14 @@ from handlers.word_games import (  # noqa: E402
     _select_word_with_cycle,
     create_word_games_router,
 )
+from services.bunker import (  # noqa: E402
+    MAX_PLAYERS,
+    deal_hands,
+    load_bunker_content,
+    pick_pairs,
+    rounds_plan,
+    vote_leaders,
+)
 from services.random_generator import (  # noqa: E402
     EmptyPoolError,
     load_dangerous_words_content,
@@ -311,3 +319,30 @@ def test_group_session_helpers() -> None:
     assert _parse_team("x") is None
     assert _is_group("supergroup") is True
     assert _is_group("private") is False
+
+
+def test_bunker_content_and_logic() -> None:
+    """контент и чистая логика бункера работают корректно"""
+    content = load_bunker_content(DATA_DIR)
+
+    hands = deal_hands(content, MAX_PLAYERS)
+    assert len(hands) == MAX_PLAYERS
+    superpowers = [hand.superpower for hand in hands]
+    assert len(superpowers) == len(set(superpowers))
+    assert hands[0].special_condition in content.special_conditions
+
+    pairs = pick_pairs(content, 5)
+    assert len(pairs) == 5
+    assert pairs[0][0] in content.bunker_items
+    assert pairs[0][1] in content.threats
+
+    plan = rounds_plan(7)
+    assert plan.votes_per_round == (0, 1, 1, 1, 1)
+    assert plan.exclusions == 4
+    assert plan.seats == 3
+
+    leaders, top = vote_leaders({1: 5, 2: 5, 3: 8})
+    assert leaders == [5] and top == 2
+    tied, tied_top = vote_leaders({1: 5, 2: 8})
+    assert set(tied) == {5, 8} and tied_top == 1
+    assert vote_leaders({}) == ([], 0)
