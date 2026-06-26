@@ -57,6 +57,7 @@ from constants import (
     CB_GS_SKIP,
     CB_GS_START,
     CB_GS_TEAMS_PREFIX,
+    CB_GS_TIMER_PREFIX,
     CB_GS_WORD,
     CB_MAIN_MENU,
     CB_SETTINGS,
@@ -84,6 +85,7 @@ from constants import (
     SESSION_START_TITLE,
     SESSION_WORD_TITLE,
     SETTINGS_TITLE,
+    TURN_SECONDS_OPTIONS,
     WORD_GAME_GET_TITLE,
     WORD_GAME_RESET_TITLE,
     team_label,
@@ -327,8 +329,10 @@ def create_play_games_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def create_session_lobby_keyboard(team_count: int) -> InlineKeyboardMarkup:
-    """создаёт клавиатуру лобби: выбор числа команд и вступление"""
+def create_session_lobby_keyboard(
+    team_count: int, turn_seconds: int
+) -> InlineKeyboardMarkup:
+    """создаёт клавиатуру лобби: число команд, время хода и вступление"""
     count_row = [
         InlineKeyboardButton(
             text=(f"[{number}]" if number == team_count else str(number)),
@@ -336,7 +340,14 @@ def create_session_lobby_keyboard(team_count: int) -> InlineKeyboardMarkup:
         )
         for number in range(MIN_TEAMS, MAX_TEAMS + 1)
     ]
-    rows = [count_row]
+    timer_row = [
+        InlineKeyboardButton(
+            text=(f"[{sec}с]" if sec == turn_seconds else f"{sec}с"),
+            callback_data=CB_GS_TIMER_PREFIX + str(sec),
+        )
+        for sec in TURN_SECONDS_OPTIONS
+    ]
+    rows = [count_row, timer_row]
     rows.extend(
         [
             InlineKeyboardButton(

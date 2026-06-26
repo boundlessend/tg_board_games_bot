@@ -1,9 +1,10 @@
+import asyncio
 import logging
 import random
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
@@ -18,9 +19,12 @@ from constants import (
     CB_GS_SKIP,
     CB_GS_START,
     CB_GS_TEAMS_PREFIX,
+    CB_GS_TIMER_PREFIX,
     CB_GS_WORD,
+    DEFAULT_TURN_SECONDS,
     MAX_TEAMS,
     MIN_TEAMS,
+    TURN_SECONDS_OPTIONS,
     team_label,
 )
 from database import DatabaseError, SQLiteHistoryStorage
@@ -42,6 +46,7 @@ class GroupSession:
     game: WordGame
     host_id: int
     team_count: int
+    turn_seconds: int
     current_team: int
     started: bool
     explainer_id: int | None
@@ -49,6 +54,7 @@ class GroupSession:
     team_of: dict[int, int] = field(default_factory=dict)
     scores: list[int] = field(default_factory=list)
     issued: set[str] = field(default_factory=set)
+    timer_task: asyncio.Task[None] | None = field(default=None)
 
 
 def create_group_session_router(
@@ -87,6 +93,7 @@ def create_group_session_router(
             game=game,
             host_id=callback.from_user.id,
             team_count=MIN_TEAMS,
+            turn_seconds=DEFAULT_TURN_SECONDS,
             current_team=0,
             started=False,
             explainer_id=None,
@@ -95,7 +102,9 @@ def create_group_session_router(
         await edit_menu(
             callback,
             _render_lobby(session),
-            create_session_lobby_keyboard(session.team_count),
+            create_session_lobby_keyboard(
+                session.team_count, session.turn_seconds
+            ),
         )
 
     @router.callback_query(_startswith(CB_GS_JOIN_PREFIX))
@@ -118,7 +127,9 @@ def create_group_session_router(
         await edit_menu(
             callback,
             _render_lobby(session),
-            create_session_lobby_keyboard(session.team_count),
+            create_session_lobby_keyboard(
+                session.team_count, session.turn_seconds
+            ),
         )
 
     @router.callback_query(_startswith(CB_GS_TEAMS_PREFIX))
@@ -152,7 +163,37 @@ def create_group_session_router(
         await edit_menu(
             callback,
             _render_lobby(session),
-            create_session_lobby_keyboard(session.team_count),
+            create_session_lobby_keyboard(
+                session.team_count, session.turn_seconds
+            ),
+        )
+
+    @router.callback_query(_startswith(CB_GS_TIMER_PREFIX))
+    async def handle_set_timer(callback: CallbackQuery) -> None:
+        """меняет время хода в лобби (только создатель)"""
+        session, _ = _lookup(callback, sessions)
+        if session is None or session.started:
+            await callback.answer()
+            return
+        if callback.from_user.id != session.host_id:
+            await callback.answer(
+                "Время хода меняет создатель.", show_alert=True
+            )
+            return
+        seconds = _parse_seconds(
+            (callback.data or "")[len(CB_GS_TIMER_PREFIX) :]
+        )
+        if seconds is None:
+            await callback.answer()
+            return
+
+        session.turn_seconds = seconds
+        await edit_menu(
+            callback,
+            _render_lobby(session),
+            create_session_lobby_keyboard(
+                session.team_count, session.turn_seconds
+            ),
         )
 
     @router.callback_query(F.data == CB_GS_START)
@@ -186,14 +227,15 @@ def create_group_session_router(
             await callback.answer("Отменить может создатель.", show_alert=True)
             return
 
+        _cancel_timer(session)
         sessions.pop(chat_id, None)
         await _edit_final(callback, "Сессия отменена.")
 
     @router.callback_query(F.data == CB_GS_WORD)
     async def handle_word(callback: CallbackQuery) -> None:
-        """выдаёт слово объясняющему в ЛС"""
-        session, _ = _lookup(callback, sessions)
-        if session is None or not session.started:
+        """выдаёт слово объясняющему в ЛС и запускает таймер хода"""
+        session, chat_id = _lookup(callback, sessions)
+        if session is None or chat_id is None or not session.started:
             await callback.answer()
             return
         user = callback.from_user
@@ -207,6 +249,9 @@ def create_group_session_router(
         if not delivered:
             return
         session.explainer_id = user.id
+        bot = callback.bot
+        if bot is not None:
+            _start_timer(chat_id, session, bot)
         await edit_menu(
             callback, _render_play(session), create_session_play_keyboard()
         )
@@ -264,6 +309,7 @@ def create_group_session_router(
             await callback.answer("Только участники сессии.", show_alert=True)
             return
 
+        _cancel_timer(session)
         session.current_team = (
             session.current_team + 1
         ) % session.team_count
@@ -283,6 +329,7 @@ def create_group_session_router(
             await callback.answer("Только участники сессии.", show_alert=True)
             return
 
+        _cancel_timer(session)
         sessions.pop(chat_id, None)
         await _edit_final(callback, "Игра окончена.\n\n" + _render_scores(session))
 
@@ -370,6 +417,52 @@ def _parse_count(value: str) -> int | None:
     if count < MIN_TEAMS or count > MAX_TEAMS:
         return None
     return count
+
+
+def _parse_seconds(value: str) -> int | None:
+    """разбирает время хода из callback-данных"""
+    try:
+        seconds = int(value)
+    except ValueError:
+        return None
+    if seconds not in TURN_SECONDS_OPTIONS:
+        return None
+    return seconds
+
+
+def _start_timer(chat_id: int, session: GroupSession, bot: Bot) -> None:
+    """запускает таймер хода, если он включён и ещё не идёт"""
+    if session.turn_seconds <= 0 or session.timer_task is not None:
+        return
+    session.timer_task = asyncio.create_task(
+        _run_timer(chat_id, session, bot)
+    )
+
+
+def _cancel_timer(session: GroupSession) -> None:
+    """останавливает текущий таймер хода"""
+    if session.timer_task is not None:
+        session.timer_task.cancel()
+        session.timer_task = None
+
+
+async def _run_timer(chat_id: int, session: GroupSession, bot: Bot) -> None:
+    """ждёт время хода и передаёт ход следующей команде по истечении"""
+    try:
+        await asyncio.sleep(session.turn_seconds)
+    except asyncio.CancelledError:
+        return
+    session.timer_task = None
+    session.current_team = (session.current_team + 1) % session.team_count
+    session.explainer_id = None
+    try:
+        await bot.send_message(
+            chat_id,
+            "Время вышло! Ход переходит.\n\n" + _render_play(session),
+            reply_markup=create_session_play_keyboard(),
+        )
+    except TelegramBadRequest:
+        pass
 
 
 def _is_group(chat_type: str) -> bool:

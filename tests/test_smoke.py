@@ -7,10 +7,11 @@ import asyncio
 import sys
 import tempfile
 from pathlib import Path
+from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from aiogram import Dispatcher  # noqa: E402
+from aiogram import Bot, Dispatcher  # noqa: E402
 
 import keyboards  # noqa: E402
 from config import _parse_admin_ids, _resolve_database_path  # noqa: E402
@@ -54,13 +55,16 @@ from handlers.dangerous_words import create_dangerous_words_router  # noqa: E402
 from handlers.favorites import create_favorites_router  # noqa: E402
 from handlers.group_session import (  # noqa: E402
     GroupSession,
+    _cancel_timer,
     _is_group,
     _parse_count,
+    _parse_seconds,
     _parse_team,
     _pick_word,
     _render_lobby,
     _render_play,
     _render_scores,
+    _run_timer,
     create_group_session_router,
 )
 from handlers.inline import create_inline_router  # noqa: E402
@@ -332,6 +336,7 @@ def test_group_session_helpers() -> None:
         game=games[0],
         host_id=1,
         team_count=2,
+        turn_seconds=60,
         current_team=0,
         started=True,
         explainer_id=None,
@@ -357,11 +362,16 @@ def test_group_session_helpers() -> None:
     assert _parse_count("3") == 3
     assert _parse_count("1") is None
     assert _parse_count("5") is None
+    assert _parse_seconds("60") == 60
+    assert _parse_seconds("45") is None
+    assert _parse_seconds("x") is None
+    _cancel_timer(session)
 
     three = GroupSession(
         game=games[0],
         host_id=1,
         team_count=3,
+        turn_seconds=60,
         current_team=0,
         started=False,
         explainer_id=None,
@@ -371,6 +381,45 @@ def test_group_session_helpers() -> None:
 
     assert _is_group("supergroup") is True
     assert _is_group("private") is False
+
+
+class _RecordingBot:
+    """заглушка бота: запоминает отправленные сообщения"""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[int, str]] = []
+
+    async def send_message(
+        self, chat_id: int, text: str, reply_markup: object = None
+    ) -> None:
+        self.sent.append((chat_id, text))
+
+
+async def _exercise_turn_timer() -> None:
+    """по истечении таймера ход уходит следующей команде с уведомлением"""
+    games = load_word_games(DATA_DIR)
+    session = GroupSession(
+        game=games[0],
+        host_id=1,
+        team_count=2,
+        turn_seconds=0,
+        current_team=0,
+        started=True,
+        explainer_id=7,
+    )
+    session.scores = [0, 0]
+    bot = _RecordingBot()
+    await _run_timer(123, session, cast(Bot, bot))
+    assert session.current_team == 1
+    assert session.explainer_id is None
+    assert session.timer_task is None
+    assert bot.sent and bot.sent[0][0] == 123
+    assert "Время вышло" in bot.sent[0][1]
+
+
+def test_turn_timer() -> None:
+    """проверяет авто-завершение хода по таймеру"""
+    asyncio.run(_exercise_turn_timer())
 
 
 def test_bunker_content_and_logic() -> None:

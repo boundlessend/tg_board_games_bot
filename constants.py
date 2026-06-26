@@ -38,9 +38,12 @@ CB_GS_SKIP = "gs:skip"
 CB_GS_NEXT = "gs:next"
 CB_GS_FINISH = "gs:finish"
 CB_GS_TEAMS_PREFIX = "gs:teams:"
+CB_GS_TIMER_PREFIX = "gs:timer:"
 
 MIN_TEAMS = 2
 MAX_TEAMS = 4
+TURN_SECONDS_OPTIONS: tuple[int, ...] = (30, 60, 90)
+DEFAULT_TURN_SECONDS = 60
 
 
 def team_label(index: int) -> str:
