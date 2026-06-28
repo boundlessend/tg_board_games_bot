@@ -7,11 +7,17 @@ import asyncio
 import sys
 import tempfile
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from aiogram import Bot, Dispatcher  # noqa: E402
+from aiogram.types import (  # noqa: E402
+    CallbackQuery,
+    Chat,
+    Message,
+    TelegramObject,
+)
 
 import keyboards  # noqa: E402
 from config import _parse_admin_ids, _resolve_database_path  # noqa: E402
@@ -46,6 +52,12 @@ from handlers.bunker import (  # noqa: E402
     create_bunker_router,
     restore_bunker_sessions,
 )
+from handlers.common import (  # noqa: E402
+    data_startswith,
+    make_chat_lock_middleware,
+    pick_unique,
+    pick_word,
+)
 from handlers.content_admin import (  # noqa: E402
     _addword_usage,
     _is_sqlite_file,
@@ -56,13 +68,14 @@ from handlers.content_admin import (  # noqa: E402
 )
 from handlers.dangerous_group import (  # noqa: E402
     DangerousGroup,
-    _persist_sessions as _dg_persist,
-    _pick as _dg_pick,
-    _pick_boss as _dg_pick_boss,
-    _pick_curse as _dg_pick_curse,
-    _render_board as _render_dg_board,
     create_dangerous_group_router,
     restore_dangerous_sessions,
+)
+from handlers.dangerous_group import (
+    _persist_sessions as _dg_persist,
+)
+from handlers.dangerous_group import (
+    _render_board as _render_dg_board,
 )
 from handlers.favorites import create_favorites_router  # noqa: E402
 from handlers.group_session import (  # noqa: E402
@@ -73,7 +86,6 @@ from handlers.group_session import (  # noqa: E402
     _parse_seconds,
     _parse_team,
     _persist_sessions,
-    _pick_word,
     _render_lobby,
     _render_play,
     _render_scores,
@@ -85,7 +97,6 @@ from handlers.inline import create_inline_router  # noqa: E402
 from handlers.settings import create_settings_router  # noqa: E402
 from handlers.start import create_start_router  # noqa: E402
 from handlers.word_games import (  # noqa: E402
-    _data_prefix,
     _resolve_game,
     _select_word_once,
     _select_word_with_cycle,
@@ -158,12 +169,9 @@ def test_pure_helpers() -> None:
     assert resolved is not None and resolved.game_id == "alias"
     assert _resolve_game("wg:open:zzz", "wg:open:", games_by_id) is None
 
-    is_word = _data_prefix("wg:word:")
-
-    class FakeCallback:
-        data = "wg:word:crocodile"
-
-    assert is_word(FakeCallback()) is True
+    is_word = data_startswith("wg:word:")
+    word_callback = CallbackQuery.model_construct(data="wg:word:crocodile")
+    assert is_word(word_callback) is True
 
 
 async def _exercise_storage() -> None:
@@ -445,12 +453,10 @@ def test_group_session_helpers() -> None:
     session.team_of = {1: 0, 2: 1}
     session.scores = [0, 0]
 
-    first, reset_first = _pick_word(["a", "b"], session.issued)
-    second, reset_second = _pick_word(["a", "b"], session.issued)
+    first = pick_word(["a", "b"], session.issued)
+    second = pick_word(["a", "b"], session.issued)
     assert {first, second} == {"a", "b"}
-    assert reset_first is False and reset_second is False
-    _, reset_third = _pick_word(["a", "b"], session.issued)
-    assert reset_third is True
+    assert pick_word(["a", "b"], session.issued) in {"a", "b"}
 
     session.scores[0] = 2
     assert "Команда 1: 2" in _render_play(session)
@@ -517,7 +523,18 @@ async def _exercise_turn_timer() -> None:
     )
     session.scores = [0, 0]
     bot = _RecordingBot()
-    await _run_timer(123, session, cast(Bot, bot))
+
+    async def _noop() -> None:
+        return None
+
+    await _run_timer(
+        123,
+        session,
+        cast(Bot, bot),
+        asyncio.Lock(),
+        _noop,
+        session.turn_epoch,
+    )
     assert session.current_team == 1
     assert session.explainer_id is None
     assert session.timer_task is None
@@ -528,6 +545,40 @@ async def _exercise_turn_timer() -> None:
 def test_turn_timer() -> None:
     """проверяет авто-завершение хода по таймеру"""
     asyncio.run(_exercise_turn_timer())
+
+
+async def _exercise_chat_lock() -> None:
+    """блокировка чата сериализует обработку: события не перемежаются"""
+    locks: dict[int, asyncio.Lock] = {}
+    middleware = make_chat_lock_middleware(locks)
+    order: list[str] = []
+
+    async def slow_handler(
+        event: TelegramObject, data: dict[str, Any]
+    ) -> None:
+        order.append("a-start")
+        await asyncio.sleep(0.02)
+        order.append("a-end")
+
+    async def fast_handler(
+        event: TelegramObject, data: dict[str, Any]
+    ) -> None:
+        order.append("b-start")
+        order.append("b-end")
+
+    chat = Chat(id=42, type="group")
+    event_a = Message.model_construct(message_id=1, chat=chat)
+    event_b = Message.model_construct(message_id=2, chat=chat)
+    await asyncio.gather(
+        middleware(slow_handler, event_a, {}),
+        middleware(fast_handler, event_b, {}),
+    )
+    assert order == ["a-start", "a-end", "b-start", "b-end"]
+
+
+def test_chat_lock_serializes() -> None:
+    """двойной клик в одном чате обрабатывается строго последовательно"""
+    asyncio.run(_exercise_chat_lock())
 
 
 def test_dangerous_group_helpers() -> None:
@@ -554,18 +605,18 @@ def test_dangerous_group_helpers() -> None:
     assert "Босс: раскрыт" in board2
 
     issued: set[str] = set()
-    first = _dg_pick(["a", "b"], issued)
-    second = _dg_pick(["a", "b"], issued)
+    first = pick_word(["a", "b"], issued)
+    second = pick_word(["a", "b"], issued)
     assert {first, second} == {"a", "b"}
-    assert _dg_pick(["a", "b"], issued) in {"a", "b"}
+    assert pick_word(["a", "b"], issued) in {"a", "b"}
 
-    curse = _dg_pick_curse(content.curses, session.issued_curses)
+    curse = pick_unique(content.curses, session.issued_curses, lambda c: c.id)
     assert curse is not None and curse.id in session.issued_curses
-    assert _dg_pick_curse([], set()) is None
+    assert pick_unique(content.curses[:0], set(), lambda c: c.id) is None
 
-    boss = _dg_pick_boss(content.bosses, session.issued_bosses)
+    boss = pick_unique(content.bosses, session.issued_bosses, lambda b: b.id)
     assert boss is not None and boss.id in session.issued_bosses
-    assert _dg_pick_boss([], set()) is None
+    assert pick_unique(content.bosses[:0], set(), lambda b: b.id) is None
 
 
 def test_bunker_content_and_logic() -> None:
@@ -588,11 +639,11 @@ def test_bunker_content_and_logic() -> None:
     assert plan.exclusions == 4
     assert plan.seats == 3
 
-    leaders, top = vote_leaders({1: 5, 2: 5, 3: 8})
-    assert leaders == [5] and top == 2
-    tied, tied_top = vote_leaders({1: 5, 2: 8})
-    assert set(tied) == {5, 8} and tied_top == 1
-    assert vote_leaders({}) == ([], 0)
+    leaders = vote_leaders({1: 5, 2: 5, 3: 8})
+    assert leaders == [5]
+    tied = vote_leaders({1: 5, 2: 8})
+    assert set(tied) == {5, 8}
+    assert vote_leaders({}) == []
 
 
 def test_bunker_handler_helpers() -> None:

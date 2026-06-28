@@ -1,8 +1,8 @@
+import json
+import random
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-import json
-import random
 from typing import Any
 
 from exceptions import DuplicateHistoryItemError

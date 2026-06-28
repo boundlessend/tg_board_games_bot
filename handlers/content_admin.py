@@ -5,12 +5,14 @@ import tempfile
 from pathlib import Path
 
 from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import Command, CommandObject
 from aiogram.types import FSInputFile, Message
 
-from constants import DANGEROUS_WORDS_GAME_ID
+from constants import DANGEROUS_WORDS_GAME_ID, MAX_CONTENT_LEN
 from database import DatabaseError, SQLiteHistoryStorage
 from exceptions import DuplicateHistoryItemError
+from handlers.common import is_private_admin, split_report
 from services.random_generator import WordGame
 
 logger = logging.getLogger(__name__)
@@ -27,13 +29,15 @@ def create_content_admin_router(
         game.game_id for game in word_games
     }
 
+    def _admin_filter(message: Message) -> bool:
+        return is_private_admin(message, admin_ids)
+
+    router.message.filter(_admin_filter)
+
     @router.message(Command("addword"))
     async def handle_add_word(
         message: Message, command: CommandObject
     ) -> None:
-        if not _is_admin(message, admin_ids):
-            return
-
         parts = (command.args or "").strip().split(maxsplit=1)
         if len(parts) < 2:
             await message.answer(_addword_usage(word_pools))
@@ -46,6 +50,11 @@ def create_content_admin_router(
             return
         if word == "":
             await message.answer("Слово пустое.")
+            return
+        if len(word) > MAX_CONTENT_LEN:
+            await message.answer(
+                f"Слово длиннее {MAX_CONTENT_LEN} символов."
+            )
             return
 
         try:
@@ -72,15 +81,17 @@ def create_content_admin_router(
     async def handle_add_curse(
         message: Message, command: CommandObject
     ) -> None:
-        if not _is_admin(message, admin_ids):
-            return
-
         pair = _parse_pair(command.args)
         if pair is None:
             await message.answer("Формат: /addcurse <название> | <описание>")
             return
 
         title, description = pair
+        if len(title) > MAX_CONTENT_LEN or len(description) > MAX_CONTENT_LEN:
+            await message.answer(
+                f"Название/описание длиннее {MAX_CONTENT_LEN} символов."
+            )
+            return
         try:
             await storage.add_custom_curse(title, description)
         except DatabaseError:
@@ -102,15 +113,17 @@ def create_content_admin_router(
     async def handle_add_boss(
         message: Message, command: CommandObject
     ) -> None:
-        if not _is_admin(message, admin_ids):
-            return
-
         pair = _parse_pair(command.args)
         if pair is None:
             await message.answer("Формат: /addboss <имя> | <описание>")
             return
 
         name, description = pair
+        if len(name) > MAX_CONTENT_LEN or len(description) > MAX_CONTENT_LEN:
+            await message.answer(
+                f"Имя/описание длиннее {MAX_CONTENT_LEN} символов."
+            )
+            return
         try:
             await storage.add_custom_boss(name, description)
         except DatabaseError:
@@ -130,9 +143,6 @@ def create_content_admin_router(
 
     @router.message(Command("backup"))
     async def handle_backup(message: Message) -> None:
-        if not _is_admin(message, admin_ids):
-            return
-
         document = FSInputFile(
             storage.database_path, filename="bot.sqlite3"
         )
@@ -140,56 +150,53 @@ def create_content_admin_router(
 
     @router.message(_is_restore_document)
     async def handle_restore(message: Message) -> None:
-        if not _is_admin(message, admin_ids):
-            return
-
         document = message.document
         bot = message.bot
         if document is None or bot is None:
             return
 
-        destination = Path(tempfile.mkdtemp()) / "restore.sqlite3"
-        try:
-            await bot.download(document, destination=destination)
-        except Exception:
-            logger.exception("download_failed", extra={"action": "restore"})
-            await message.answer("Не удалось скачать файл.")
-            return
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "restore.sqlite3"
+            try:
+                await bot.download(document, destination=destination)
+            except (TelegramBadRequest, TelegramNetworkError, OSError):
+                logger.exception(
+                    "download_failed", extra={"action": "restore"}
+                )
+                await message.answer("Не удалось скачать файл.")
+                return
 
-        if not _is_sqlite_file(destination):
-            await message.answer("Это не похоже на файл SQLite-базы.")
-            return
+            if not _is_sqlite_file(destination):
+                await message.answer("Это не похоже на файл SQLite-базы.")
+                return
 
-        try:
-            await storage.replace_database(destination)
-        except DatabaseError:
-            logger.exception(
-                "database_error",
-                extra={
-                    "telegram_id": (
-                        message.from_user.id if message.from_user else None
-                    ),
-                    "action": "restore",
-                },
-            )
-            await message.answer("Не удалось восстановить базу.")
-            return
+            try:
+                await storage.replace_database(destination)
+            except DatabaseError:
+                logger.exception(
+                    "database_error",
+                    extra={
+                        "telegram_id": (
+                            message.from_user.id
+                            if message.from_user
+                            else None
+                        ),
+                        "action": "restore",
+                    },
+                )
+                await message.answer("Не удалось восстановить базу.")
+                return
 
         await message.answer("База восстановлена из файла.")
 
     @router.message(Command("restore"))
     async def handle_restore_hint(message: Message) -> None:
-        if not _is_admin(message, admin_ids):
-            return
         await message.answer(
             "Пришлите файл базы (.sqlite3) с подписью /restore."
         )
 
     @router.message(Command("listcontent"))
     async def handle_list_content(message: Message) -> None:
-        if not _is_admin(message, admin_ids):
-            return
-
         try:
             sections = ["Пользовательский контент:"]
             for game_id in sorted(word_pools):
@@ -213,15 +220,13 @@ def create_content_admin_router(
             await message.answer("Не удалось получить контент.")
             return
 
-        await message.answer("\n".join(sections))
+        for chunk in split_report("\n".join(sections)):
+            await message.answer(chunk)
 
     @router.message(Command("delword"))
     async def handle_del_word(
         message: Message, command: CommandObject
     ) -> None:
-        if not _is_admin(message, admin_ids):
-            return
-
         parts = (command.args or "").strip().split(maxsplit=1)
         if len(parts) < 2 or parts[0] not in word_pools:
             await message.answer(
@@ -249,9 +254,6 @@ def create_content_admin_router(
     async def handle_del_curse(
         message: Message, command: CommandObject
     ) -> None:
-        if not _is_admin(message, admin_ids):
-            return
-
         row_id = _parse_custom_id(command.args, "cc_")
         if row_id is None:
             await message.answer("Формат: /delcurse <id> (например cc_3)")
@@ -272,9 +274,6 @@ def create_content_admin_router(
     async def handle_del_boss(
         message: Message, command: CommandObject
     ) -> None:
-        if not _is_admin(message, admin_ids):
-            return
-
         row_id = _parse_custom_id(command.args, "cb_")
         if row_id is None:
             await message.answer("Формат: /delboss <id> (например cb_3)")
@@ -293,9 +292,6 @@ def create_content_admin_router(
 
     @router.message(_is_import_words_document)
     async def handle_import_words(message: Message) -> None:
-        if not _is_admin(message, admin_ids):
-            return
-
         caption_parts = (message.caption or "").strip().split()
         if len(caption_parts) < 2 or caption_parts[1] not in word_pools:
             await message.answer(
@@ -310,22 +306,25 @@ def create_content_admin_router(
         if document is None or bot is None:
             return
 
-        destination = Path(tempfile.mkdtemp()) / "pack"
-        try:
-            await bot.download(document, destination=destination)
-        except Exception:
-            logger.exception("download_failed", extra={"action": "import"})
-            await message.answer("Не удалось скачать файл.")
-            return
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "pack"
+            try:
+                await bot.download(document, destination=destination)
+            except (TelegramBadRequest, TelegramNetworkError, OSError):
+                logger.exception(
+                    "download_failed", extra={"action": "import"}
+                )
+                await message.answer("Не удалось скачать файл.")
+                return
 
-        try:
-            words = _parse_words_pack(destination.read_bytes())
-        except (OSError, ValueError):
-            await message.answer(
-                "Не удалось разобрать файл (ожидается JSON-массив "
-                "или слова по строкам/через запятую)."
-            )
-            return
+            try:
+                words = _parse_words_pack(destination.read_bytes())
+            except (OSError, ValueError):
+                await message.answer(
+                    "Не удалось разобрать файл (ожидается JSON-массив "
+                    "или слова по строкам/через запятую)."
+                )
+                return
 
         try:
             added, skipped = await _import_words(storage, game_id, words)
@@ -339,15 +338,6 @@ def create_content_admin_router(
         )
 
     return router
-
-
-def _is_admin(message: Message, admin_ids: frozenset[int]) -> bool:
-    """проверяет что команда от администратора из личного чата"""
-    if message.chat.type != "private":
-        return False
-    if message.from_user is None:
-        return False
-    return message.from_user.id in admin_ids
 
 
 def _addword_usage(word_pools: set[str]) -> str:
@@ -439,7 +429,8 @@ async def _import_words(
     skipped = 0
     for word in words:
         normalized = word.strip().lower()
-        if normalized == "":
+        if normalized == "" or len(normalized) > MAX_CONTENT_LEN:
+            skipped += 1
             continue
         try:
             await storage.add_custom_word(game_id, normalized)

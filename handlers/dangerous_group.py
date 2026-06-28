@@ -1,13 +1,12 @@
+import asyncio
 import json
 import logging
-import random
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.types import CallbackQuery, Message, TelegramObject
+from aiogram.types import CallbackQuery, Message
 
 from constants import (
     CB_DG_BOSS,
@@ -26,6 +25,13 @@ from constants import (
     team_label,
 )
 from database import DatabaseError, SQLiteHistoryStorage
+from handlers.common import (
+    lookup_chat_session,
+    make_chat_lock_middleware,
+    make_persist_middleware,
+    pick_unique,
+    pick_word,
+)
 from keyboards import (
     create_dangerous_group_keyboard,
     create_dg_offer_keyboard,
@@ -60,23 +66,15 @@ def create_dangerous_group_router(
 ) -> Router:
     """создаёт роутер командной игры «опасные слова» (бот-крупье)"""
     router = Router()
+    locks: dict[int, asyncio.Lock] = {}
 
-    async def _persist_mw(
-        handler: Callable[
-            [TelegramObject, dict[str, Any]], Awaitable[Any]
-        ],
-        event: TelegramObject,
-        data: dict[str, Any],
-    ) -> Any:
-        """сохраняет снапшот сессий после каждой обработки callback"""
-        result = await handler(event, data)
-        try:
-            await _persist_sessions(storage, sessions)
-        except DatabaseError:
-            logger.exception("session_persist_failed", extra={"scope": _SCOPE})
-        return result
+    async def _persist() -> None:
+        await _persist_sessions(storage, sessions)
 
-    router.callback_query.middleware(_persist_mw)
+    router.callback_query.middleware(make_chat_lock_middleware(locks))
+    router.callback_query.middleware(
+        make_persist_middleware(_persist, _SCOPE)
+    )
 
     @router.callback_query(F.data == CB_DG_OPEN)
     async def handle_open(callback: CallbackQuery) -> None:
@@ -106,7 +104,7 @@ def create_dangerous_group_router(
     @router.callback_query(F.data == CB_DG_EXPLAIN)
     async def handle_explain(callback: CallbackQuery) -> None:
         """назначает объясняющего из объясняющей команды"""
-        session, _ = _lookup(callback, sessions)
+        session, _ = lookup_chat_session(callback, sessions)
         if session is None:
             await callback.answer()
             return
@@ -118,7 +116,7 @@ def create_dangerous_group_router(
     @router.callback_query(F.data == CB_DG_WORD)
     async def handle_word(callback: CallbackQuery) -> None:
         """тянет слово в ЛС загадывающей команде, чтобы написать запретные"""
-        session, _ = _lookup(callback, sessions)
+        session, _ = lookup_chat_session(callback, sessions)
         if session is None:
             await callback.answer()
             return
@@ -138,7 +136,7 @@ def create_dangerous_group_router(
             await callback.answer("Ошибка БД. Попробуйте позже.", show_alert=True)
             return
 
-        word = _pick(pool, session.issued_words)
+        word = pick_word(pool, session.issued_words)
         session.current_word = word
         try:
             await bot.send_message(callback.from_user.id, f"Слово: {word}")
@@ -154,7 +152,7 @@ def create_dangerous_group_router(
     @router.callback_query(F.data == CB_DG_SEND)
     async def handle_send(callback: CallbackQuery) -> None:
         """отправляет вытянутое слово объясняющему из другой команды"""
-        session, _ = _lookup(callback, sessions)
+        session, _ = lookup_chat_session(callback, sessions)
         if session is None:
             await callback.answer()
             return
@@ -185,10 +183,13 @@ def create_dangerous_group_router(
 
     @router.callback_query(F.data == CB_DG_NEXT)
     async def handle_next(callback: CallbackQuery) -> None:
-        """меняет роли команд (загадывает/объясняет)"""
-        session, _ = _lookup(callback, sessions)
+        """меняет роли команд (загадывает/объясняет) - только ведущий"""
+        session, _ = lookup_chat_session(callback, sessions)
         if session is None:
             await callback.answer()
+            return
+        if callback.from_user.id != session.host_id:
+            await callback.answer("Ход передаёт ведущий.", show_alert=True)
             return
         session.explaining_team = 1 - session.explaining_team
         session.explainer_id = None
@@ -200,7 +201,7 @@ def create_dangerous_group_router(
     @router.callback_query(F.data == CB_DG_CURSE)
     async def handle_curse(callback: CallbackQuery) -> None:
         """тянет проклятие и предлагает принять или реролльнуть (ведущий)"""
-        session, _ = _lookup(callback, sessions)
+        session, _ = lookup_chat_session(callback, sessions)
         message = callback.message
         if session is None or not isinstance(message, Message):
             await callback.answer()
@@ -217,7 +218,7 @@ def create_dangerous_group_router(
             await callback.answer("Ошибка БД. Попробуйте позже.", show_alert=True)
             return
 
-        curse = _pick_curse(pool, session.issued_curses)
+        curse = pick_unique(pool, session.issued_curses, lambda c: c.id)
         if curse is None:
             await callback.answer("Проклятий нет.", show_alert=True)
             return
@@ -232,7 +233,7 @@ def create_dangerous_group_router(
     @router.callback_query(F.data == CB_DG_CURSE_REROLL)
     async def handle_curse_reroll(callback: CallbackQuery) -> None:
         """заменяет предложенное проклятие новым (только ведущий)"""
-        session, _ = _lookup(callback, sessions)
+        session, _ = lookup_chat_session(callback, sessions)
         message = callback.message
         if session is None or not isinstance(message, Message):
             await callback.answer()
@@ -247,7 +248,7 @@ def create_dangerous_group_router(
             await callback.answer("Ошибка БД. Попробуйте позже.", show_alert=True)
             return
 
-        curse = _pick_curse(pool, session.issued_curses)
+        curse = pick_unique(pool, session.issued_curses, lambda c: c.id)
         if curse is None:
             await callback.answer("Проклятий нет.", show_alert=True)
             return
@@ -265,7 +266,7 @@ def create_dangerous_group_router(
     @router.callback_query(F.data == CB_DG_CURSE_KEEP)
     async def handle_curse_keep(callback: CallbackQuery) -> None:
         """фиксирует проклятие в чате, убирая кнопки (только ведущий)"""
-        session, _ = _lookup(callback, sessions)
+        session, _ = lookup_chat_session(callback, sessions)
         message = callback.message
         if session is None or not isinstance(message, Message):
             await callback.answer()
@@ -282,7 +283,7 @@ def create_dangerous_group_router(
     @router.callback_query(F.data == CB_DG_BOSS)
     async def handle_boss(callback: CallbackQuery) -> None:
         """тянет босса и предлагает принять или реролльнуть (ведущий)"""
-        session, _ = _lookup(callback, sessions)
+        session, _ = lookup_chat_session(callback, sessions)
         message = callback.message
         if session is None or not isinstance(message, Message):
             await callback.answer()
@@ -307,7 +308,7 @@ def create_dangerous_group_router(
             await callback.answer("Ошибка БД. Попробуйте позже.", show_alert=True)
             return
 
-        boss = _pick_boss(pool, session.issued_bosses)
+        boss = pick_unique(pool, session.issued_bosses, lambda b: b.id)
         if boss is None:
             await callback.answer("Боссов нет.", show_alert=True)
             return
@@ -323,7 +324,7 @@ def create_dangerous_group_router(
     @router.callback_query(F.data == CB_DG_BOSS_REROLL)
     async def handle_boss_reroll(callback: CallbackQuery) -> None:
         """заменяет предложенного босса новым (только ведущий)"""
-        session, _ = _lookup(callback, sessions)
+        session, _ = lookup_chat_session(callback, sessions)
         message = callback.message
         if session is None or not isinstance(message, Message):
             await callback.answer()
@@ -338,7 +339,7 @@ def create_dangerous_group_router(
             await callback.answer("Ошибка БД. Попробуйте позже.", show_alert=True)
             return
 
-        boss = _pick_boss(pool, session.issued_bosses)
+        boss = pick_unique(pool, session.issued_bosses, lambda b: b.id)
         if boss is None:
             await callback.answer("Боссов нет.", show_alert=True)
             return
@@ -356,7 +357,7 @@ def create_dangerous_group_router(
     @router.callback_query(F.data == CB_DG_BOSS_KEEP)
     async def handle_boss_keep(callback: CallbackQuery) -> None:
         """фиксирует босса на игру, убирая кнопки (только ведущий)"""
-        session, _ = _lookup(callback, sessions)
+        session, _ = lookup_chat_session(callback, sessions)
         message = callback.message
         if session is None or not isinstance(message, Message):
             await callback.answer()
@@ -376,7 +377,7 @@ def create_dangerous_group_router(
     @router.callback_query(F.data == CB_DG_FINISH)
     async def handle_finish(callback: CallbackQuery) -> None:
         """завершает партию (только ведущий)"""
-        session, chat_id = _lookup(callback, sessions)
+        session, chat_id = lookup_chat_session(callback, sessions)
         if session is None or chat_id is None:
             await callback.answer()
             return
@@ -447,17 +448,6 @@ async def restore_dangerous_sessions(
         sessions[int(key)] = _load_session(json.loads(data))
 
 
-def _lookup(
-    callback: CallbackQuery, sessions: dict[int, DangerousGroup]
-) -> tuple[DangerousGroup | None, int | None]:
-    """находит сессию по чату callback"""
-    message = callback.message
-    if not isinstance(message, Message):
-        return None, None
-    chat_id = message.chat.id
-    return sessions.get(chat_id), chat_id
-
-
 async def _edit_board(
     callback: CallbackQuery, session: DangerousGroup
 ) -> None:
@@ -471,43 +461,6 @@ async def _edit_board(
             )
         except TelegramBadRequest:
             pass
-
-
-def _pick(pool: list[str], issued: set[str]) -> str:
-    """выбирает слово без повтора в сессии, сбрасывая круг при исчерпании"""
-    available = [word for word in pool if word not in issued]
-    if len(available) == 0:
-        issued.clear()
-        available = list(pool)
-    word = random.choice(available)
-    issued.add(word)
-    return word
-
-
-def _pick_curse(pool: list[Curse], issued: set[str]) -> Curse | None:
-    """выбирает проклятие без повтора в сессии"""
-    if len(pool) == 0:
-        return None
-    available = [curse for curse in pool if curse.id not in issued]
-    if len(available) == 0:
-        issued.clear()
-        available = list(pool)
-    curse = random.choice(available)
-    issued.add(curse.id)
-    return curse
-
-
-def _pick_boss(pool: list[Boss], issued: set[str]) -> Boss | None:
-    """выбирает босса без повтора в сессии"""
-    if len(pool) == 0:
-        return None
-    available = [boss for boss in pool if boss.id not in issued]
-    if len(available) == 0:
-        issued.clear()
-        available = list(pool)
-    boss = random.choice(available)
-    issued.add(boss.id)
-    return boss
 
 
 def _curse_text(curse: Curse) -> str:

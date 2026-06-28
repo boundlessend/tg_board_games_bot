@@ -2,7 +2,10 @@ services:
   bot:
     build: .
     container_name: tg-board-games
-    env_file: .env
+    # .env опционален: BOT_TOKEN/ADMIN_IDS можно задать и через окружение
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_PATH: /db/bot.sqlite3
     restart: unless-stopped

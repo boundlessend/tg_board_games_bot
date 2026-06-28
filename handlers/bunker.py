@@ -1,7 +1,7 @@
+import asyncio
 import json
 import logging
 import random
-from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -12,7 +12,6 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     Message,
-    TelegramObject,
 )
 
 from constants import (
@@ -33,7 +32,12 @@ from constants import (
     CB_BK_VOTE_START,
     CB_BK_VOTE_TALLY,
 )
-from database import DatabaseError, SQLiteHistoryStorage
+from database import SQLiteHistoryStorage
+from handlers.common import (
+    data_startswith,
+    make_chat_lock_middleware,
+    make_persist_middleware,
+)
 from keyboards import (
     create_bunker_lobby_keyboard,
     create_bunker_reveal_keyboard,
@@ -84,7 +88,6 @@ class BunkerSession:
     pairs: list[tuple[str, str]] = field(default_factory=list)
     plan: RoundsPlan | None = None
     round_no: int = 0
-    pairs_open: int = 0
     votes_pending: int = 0
     revote: bool = False
     players: dict[int, str] = field(default_factory=dict)
@@ -120,32 +123,31 @@ def create_bunker_router(
 ) -> Router:
     """создаёт роутер игры бункер: групповой режим и режим «отдельно»"""
     router = Router()
+    locks: dict[int, asyncio.Lock] = {}
 
-    async def _persist_mw(
-        handler: Callable[
-            [TelegramObject, dict[str, Any]], Awaitable[Any]
-        ],
-        event: TelegramObject,
-        data: dict[str, Any],
-    ) -> Any:
-        """сохраняет снапшот партий и лобби после каждой обработки"""
-        result = await handler(event, data)
-        try:
-            await _persist_bunker(storage, sessions, lobbies)
-        except DatabaseError:
-            logger.exception("session_persist_failed", extra={"scope": _SCOPE})
-        return result
+    async def _persist() -> None:
+        await _persist_bunker(storage, sessions, lobbies)
 
-    router.callback_query.middleware(_persist_mw)
-    router.message.middleware(_persist_mw)
+    router.callback_query.middleware(make_chat_lock_middleware(locks))
+    router.message.middleware(make_chat_lock_middleware(locks))
+    router.callback_query.middleware(make_persist_middleware(_persist, _SCOPE))
+    router.message.middleware(make_persist_middleware(_persist, _SCOPE))
 
     async def _open_group_lobby(target: Message, host_id: int) -> None:
         """создаёт групповое лобби бункера в чате target"""
         existing = sessions.get(target.chat.id)
-        if existing is not None and existing.phase != "lobby":
-            await target.answer(
-                "Партия уже идёт. Создатель может нажать «Отменить игру»."
+        if existing is not None:
+            if existing.phase != "lobby":
+                await target.answer(
+                    "Партия уже идёт. Создатель может нажать «Отменить игру»."
+                )
+                return
+            # лобби уже открыто - не сбрасываем набранных игроков
+            sent = await target.answer(
+                _render_board(existing),
+                reply_markup=_board_keyboard(existing),
             )
+            existing.board_message_id = sent.message_id
             return
         session = BunkerSession(host_id=host_id, board_chat_id=target.chat.id)
         sessions[target.chat.id] = session
@@ -202,7 +204,7 @@ def create_bunker_router(
             await callback.answer("Бункер переполнен.", show_alert=True)
             return
         session.players[callback.from_user.id] = callback.from_user.full_name
-        await _show_board(callback, session, False)
+        await _edit_board(callback, session)
         await callback.answer("Ты в убежище.")
 
     @router.callback_query(F.data == CB_BK_MODE)
@@ -216,7 +218,7 @@ def create_bunker_router(
             await callback.answer("Режим меняет создатель.", show_alert=True)
             return
         session.story_mode = not session.story_mode
-        await _show_board(callback, session, False)
+        await _edit_board(callback, session)
         await callback.answer()
 
     @router.callback_query(F.data == CB_BK_START)
@@ -241,10 +243,14 @@ def create_bunker_router(
         if bot is None:
             await callback.answer()
             return
-        hands = deal_hands(content, count)
-        assignments = dict(zip(session.players, hands, strict=True))
+        # переиздаём руки только если состав изменился: иначе повтор «Начать»
+        # после недоставки выдал бы уже получившим игрокам другие карты
+        if set(session.hands) != set(session.players):
+            session.hands = dict(
+                zip(session.players, deal_hands(content, count), strict=True)
+            )
         unreachable: list[str] = []
-        for player_id, hand in assignments.items():
+        for player_id, hand in session.hands.items():
             try:
                 await bot.send_message(player_id, _render_hand(hand))
             except TelegramForbiddenError:
@@ -257,14 +263,13 @@ def create_bunker_router(
             )
             return
 
-        session.hands = assignments
         session.catastrophe = pick_catastrophe(content)
         session.pairs = pick_pairs(content, ROUNDS_TOTAL)
         session.plan = rounds_plan(count)
         session.revealed_count = {player_id: 0 for player_id in session.players}
         _begin_round(session, 1)
         await bot.send_message(session.board_chat_id, _render_intro(session))
-        await _show_board(callback, session, True)
+        await _post_board(callback, session)
         await callback.answer()
 
     @router.callback_query(F.data == CB_BK_REVEAL)
@@ -296,7 +301,7 @@ def create_bunker_router(
                 f"🃏 {session.players[player_id]} открывает - "
                 f"{BUNKER_CARD_LABELS[key]}: {card}",
             )
-        await _show_board(callback, session, False)
+        await _edit_board(callback, session)
         await callback.answer("Карта открыта.")
 
     @router.callback_query(F.data == CB_BK_VOTE_START)
@@ -313,10 +318,10 @@ def create_bunker_router(
             await callback.answer("В этом раунде голосования нет.", show_alert=True)
             return
         _open_vote(session, _alive(session))
-        await _show_board(callback, session, True)
+        await _post_board(callback, session)
         await callback.answer()
 
-    @router.callback_query(_startswith(CB_BK_VOTE_PREFIX))
+    @router.callback_query(data_startswith(CB_BK_VOTE_PREFIX))
     async def handle_vote(callback: CallbackQuery) -> None:
         """принимает голос игрока против кандидата"""
         session = sessions.get(_chat_id(callback))
@@ -324,8 +329,10 @@ def create_bunker_router(
             await callback.answer()
             return
         voter_id = callback.from_user.id
-        if voter_id not in session.players:
-            await callback.answer("Голосуют только участники.", show_alert=True)
+        if voter_id not in session.players or voter_id in session.excluded:
+            await callback.answer(
+                "Голосуют только активные игроки.", show_alert=True
+            )
             return
         candidate = _parse_int((callback.data or "")[len(CB_BK_VOTE_PREFIX):])
         if candidate is None or candidate not in session.vote_candidates:
@@ -333,10 +340,10 @@ def create_bunker_router(
             return
 
         session.votes[voter_id] = candidate
-        if len(session.votes) >= len(session.players):
+        if len(session.votes) >= len(_alive(session)):
             await _close_vote(callback, session)
         else:
-            await _show_board(callback, session, False)
+            await _edit_board(callback, session)
             await callback.answer("Голос учтён.")
 
     @router.callback_query(F.data == CB_BK_VOTE_TALLY)
@@ -369,7 +376,7 @@ def create_bunker_router(
             return
         _begin_round(session, session.round_no + 1)
         await _announce_round(callback, session)
-        await _show_board(callback, session, True)
+        await _post_board(callback, session)
         await callback.answer()
 
     @router.callback_query(F.data == CB_BK_CANCEL)
@@ -510,7 +517,7 @@ def create_bunker_router(
         if len(session.story_votes) >= len(session.players):
             await _resolve_challenge(callback, session)
         else:
-            await _show_board(callback, session, False)
+            await _edit_board(callback, session)
             await callback.answer("Голос учтён.")
 
     @router.callback_query(F.data == CB_BK_STORY_TALLY)
@@ -530,7 +537,7 @@ def create_bunker_router(
 
     async def _close_vote(callback: CallbackQuery, session: BunkerSession) -> None:
         """подводит итог голосования: изгоняет или назначает переголосование"""
-        leaders, _ = vote_leaders(session.votes)
+        leaders = vote_leaders(session.votes)
         bot = callback.bot
         if len(leaders) > 1 and not session.revote:
             names = ", ".join(session.players[c] for c in leaders)
@@ -541,7 +548,7 @@ def create_bunker_router(
                 )
             session.revote = True
             _open_vote(session, leaders)
-            await _show_board(callback, session, True)
+            await _post_board(callback, session)
             await callback.answer()
             return
 
@@ -555,7 +562,7 @@ def create_bunker_router(
 
         if session.votes_pending > 0:
             _open_vote(session, _alive(session))
-            await _show_board(callback, session, True)
+            await _post_board(callback, session)
             await callback.answer()
             return
         if session.round_no >= ROUNDS_TOTAL:
@@ -563,7 +570,7 @@ def create_bunker_router(
             return
         _begin_round(session, session.round_no + 1)
         await _announce_round(callback, session)
-        await _show_board(callback, session, True)
+        await _post_board(callback, session)
         await callback.answer()
 
     async def _announce_round(
@@ -623,7 +630,7 @@ def create_bunker_router(
             await bot.send_message(
                 session.board_chat_id, _render_challenge(session)
             )
-        await _show_board(callback, session, True)
+        await _post_board(callback, session)
         await callback.answer()
 
     async def _resolve_challenge(
@@ -693,7 +700,6 @@ def _dump_bunker(session: BunkerSession) -> dict[str, Any]:
         "pairs": [list(pair) for pair in session.pairs],
         "plan": _dump_plan(session.plan) if session.plan is not None else None,
         "round_no": session.round_no,
-        "pairs_open": session.pairs_open,
         "votes_pending": session.votes_pending,
         "revote": session.revote,
         "players": session.players,
@@ -725,7 +731,6 @@ def _load_bunker(data: dict[str, Any]) -> BunkerSession:
     plan = data["plan"]
     session.plan = _load_plan(plan) if plan is not None else None
     session.round_no = data["round_no"]
-    session.pairs_open = data["pairs_open"]
     session.votes_pending = data["votes_pending"]
     session.revote = data["revote"]
     session.players = {int(k): v for k, v in data["players"].items()}
@@ -810,7 +815,6 @@ def _begin_round(session: BunkerSession, round_no: int) -> None:
     """открывает новый раунд: пара бункер+угроза и план голосований"""
     plan = session.plan
     session.round_no = round_no
-    session.pairs_open = round_no
     session.phase = "reveal"
     session.votes_pending = plan.votes_per_round[round_no - 1] if plan else 0
     session.votes = {}
@@ -838,27 +842,33 @@ def _alive(session: BunkerSession) -> list[int]:
     return [pid for pid in session.players if pid not in session.excluded]
 
 
-async def _show_board(
-    callback: CallbackQuery, session: BunkerSession, fresh: bool
-) -> None:
-    """обновляет табло: новое сообщение на смене фазы, иначе правка на месте"""
+async def _post_board(callback: CallbackQuery, session: BunkerSession) -> None:
+    """публикует новое сообщение-табло (на смене фазы)"""
     bot = callback.bot
     if bot is None:
         return
-    text = _render_board(session)
-    keyboard = _board_keyboard(session)
-    if fresh or session.board_message_id is None:
-        sent = await bot.send_message(
-            session.board_chat_id, text, reply_markup=keyboard
-        )
-        session.board_message_id = sent.message_id
+    sent = await bot.send_message(
+        session.board_chat_id,
+        _render_board(session),
+        reply_markup=_board_keyboard(session),
+    )
+    session.board_message_id = sent.message_id
+
+
+async def _edit_board(callback: CallbackQuery, session: BunkerSession) -> None:
+    """правит сообщение-табло на месте, публикует новое если его ещё нет"""
+    bot = callback.bot
+    if bot is None:
+        return
+    if session.board_message_id is None:
+        await _post_board(callback, session)
         return
     try:
         await bot.edit_message_text(
-            text,
+            _render_board(session),
             chat_id=session.board_chat_id,
             message_id=session.board_message_id,
-            reply_markup=keyboard,
+            reply_markup=_board_keyboard(session),
         )
     except TelegramBadRequest:
         pass
@@ -903,7 +913,7 @@ def _render_board(session: BunkerSession) -> str:
         f"🏚 Бункер - раунд {session.round_no}/{ROUNDS_TOTAL}",
         f"☢️ Катастрофа: {session.catastrophe}",
         f"🚪 Мест в бункере: {seats} | под изгнание осталось: {left}",
-        f"📦 Открыто пар бункер+угроза: {session.pairs_open}/{ROUNDS_TOTAL}",
+        f"📦 Открыто пар бункер+угроза: {session.round_no}/{ROUNDS_TOTAL}",
         "",
         "👥 Игроки:",
     ]
@@ -927,7 +937,7 @@ def _render_board(session: BunkerSession) -> str:
         scope = " (переголосование)" if session.revote else ""
         lines.append(
             f"Голосование за изгнание{scope}. "
-            f"Проголосовали: {len(session.votes)}/{len(session.players)}."
+            f"Проголосовали: {len(session.votes)}/{len(_alive(session))}."
         )
         lines.append("Жмите кандидата - голос тайный.")
     return "\n".join(lines)
@@ -1242,13 +1252,6 @@ def _drop_lobby(
     for member_id in lobby.members:
         member_lobby.pop(member_id, None)
     lobbies.pop(lobby.code, None)
-
-
-def _startswith(prefix: str) -> Callable[[CallbackQuery], bool]:
-    """фильтр callback по префиксу данных"""
-    return lambda callback: (
-        callback.data is not None and callback.data.startswith(prefix)
-    )
 
 
 def _chat_id(callback: CallbackQuery) -> int:

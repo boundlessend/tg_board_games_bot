@@ -1,5 +1,5 @@
 import shutil
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import (
@@ -147,12 +147,12 @@ _HISTORY_TABLE_NAMES: tuple[str, ...] = (
 
 def _now_iso() -> str:
     """возвращает текущее время в ISO-формате UTC"""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def iso_days_ago(days: int) -> str:
     """возвращает ISO-метку времени days дней назад (UTC)"""
-    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    return (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
 
 def _issuances_subquery() -> Subquery:
@@ -200,6 +200,14 @@ class SQLiteHistoryStorage:
         """заменяет файл базы и пересоздаёт подключение"""
         try:
             await self._engine.dispose()
+            if self._database_path.exists():
+                # ponytail: один .bak, последняя копия перед заменой
+                shutil.copyfile(
+                    self._database_path,
+                    self._database_path.with_name(
+                        self._database_path.name + ".bak"
+                    ),
+                )
             shutil.copyfile(source_path, self._database_path)
             self._engine = create_async_engine(
                 f"sqlite+aiosqlite:///{self._database_path.as_posix()}"

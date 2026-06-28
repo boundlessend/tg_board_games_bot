@@ -9,6 +9,7 @@ from constants import (
     CB_WG_WORD_PREFIX,
 )
 from database import DatabaseError, SQLiteHistoryStorage
+from handlers.common import data_startswith
 from handlers.ui import edit_menu, edit_result
 from keyboards import create_word_game_keyboard
 from services.random_generator import (
@@ -28,7 +29,7 @@ def create_word_games_router(
     router = Router()
     games_by_id = {game.game_id: game for game in word_games}
 
-    @router.callback_query(_data_prefix(CB_WG_OPEN_PREFIX))
+    @router.callback_query(data_startswith(CB_WG_OPEN_PREFIX))
     async def handle_open_game(callback: CallbackQuery) -> None:
         """открывает меню словесной игры"""
         game = _resolve_game(callback.data, CB_WG_OPEN_PREFIX, games_by_id)
@@ -42,7 +43,7 @@ def create_word_games_router(
             create_word_game_keyboard(game.game_id),
         )
 
-    @router.callback_query(_data_prefix(CB_WG_WORD_PREFIX))
+    @router.callback_query(data_startswith(CB_WG_WORD_PREFIX))
     async def handle_get_word(callback: CallbackQuery) -> None:
         """выдаёт слово словесной игры без повтора с авто-кругом"""
         game = _resolve_game(callback.data, CB_WG_WORD_PREFIX, games_by_id)
@@ -91,7 +92,7 @@ def create_word_games_router(
             text = "Слова закончились, начинаем новый круг.\n\n" + text
         await edit_result(callback, text)
 
-    @router.callback_query(_data_prefix(CB_WG_RESET_PREFIX))
+    @router.callback_query(data_startswith(CB_WG_RESET_PREFIX))
     async def handle_reset_game(callback: CallbackQuery) -> None:
         """сбрасывает историю слов словесной игры"""
         game = _resolve_game(callback.data, CB_WG_RESET_PREFIX, games_by_id)
@@ -115,13 +116,6 @@ def create_word_games_router(
         await callback.answer("Новая игра: слова сброшены.", show_alert=True)
 
     return router
-
-
-def _data_prefix(prefix: str):
-    """создаёт фильтр callback по префиксу данных"""
-    return lambda callback: (
-        callback.data is not None and callback.data.startswith(prefix)
-    )
 
 
 def _resolve_game(

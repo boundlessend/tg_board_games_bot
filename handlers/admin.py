@@ -15,11 +15,15 @@ from constants import (
     CB_ADMIN_STATS,
     CURSES_HISTORY_KEY,
     CURSES_LIMIT,
-    TELEGRAM_MESSAGE_LIMIT,
     WORDS_HISTORY_KEY,
     WORDS_LIMIT,
 )
 from database import DatabaseError, SQLiteHistoryStorage, iso_days_ago
+from handlers.common import (
+    is_private_admin,
+    is_private_admin_callback,
+    split_report,
+)
 from keyboards import create_admin_keyboard, create_private_menu_keyboard
 from services.random_generator import (
     Boss,
@@ -42,20 +46,24 @@ def create_admin_router(
     """создаёт роутер админ-меню с доступом по telegram id"""
     router = Router()
 
+    def _is_admin_message(message: Message) -> bool:
+        return is_private_admin(message, admin_ids)
+
+    def _is_admin_callback(callback: CallbackQuery) -> bool:
+        return is_private_admin_callback(callback, admin_ids)
+
+    router.message.filter(_is_admin_message)
+    router.callback_query.filter(_is_admin_callback)
+
     @router.message(Command("admin"))
     async def handle_admin_open(message: Message) -> None:
-        if not _is_authorized_admin_message(message, admin_ids):
+        user = message.from_user
+        if user is None:
             return
-
-        admin_id = _extract_telegram_id(message)
-        await _send_summary(message, storage, admin_id)
+        await _send_summary(message, storage, user.id)
 
     @router.callback_query(F.data == CB_ADMIN_STATS)
     async def handle_admin_stats_request(callback: CallbackQuery) -> None:
-        if not _is_authorized_admin_callback(callback, admin_ids):
-            await callback.answer()
-            return
-
         message = callback.message
         if isinstance(message, Message):
             await _send_all_statistics(
@@ -65,10 +73,6 @@ def create_admin_router(
 
     @router.callback_query(F.data == CB_ADMIN_CSV)
     async def handle_admin_csv(callback: CallbackQuery) -> None:
-        if not _is_authorized_admin_callback(callback, admin_ids):
-            await callback.answer()
-            return
-
         message = callback.message
         if not isinstance(message, Message):
             await callback.answer()
@@ -98,10 +102,6 @@ def create_admin_router(
 
     @router.callback_query(F.data == CB_ADMIN_ACTIVITY)
     async def handle_admin_activity(callback: CallbackQuery) -> None:
-        if not _is_authorized_admin_callback(callback, admin_ids):
-            await callback.answer()
-            return
-
         message = callback.message
         if not isinstance(message, Message):
             await callback.answer()
@@ -129,10 +129,6 @@ def create_admin_router(
 
     @router.callback_query(F.data == CB_ADMIN_CLOSE)
     async def handle_admin_close(callback: CallbackQuery) -> None:
-        if not _is_authorized_admin_callback(callback, admin_ids):
-            await callback.answer()
-            return
-
         message = callback.message
         if isinstance(message, Message):
             try:
@@ -145,34 +141,6 @@ def create_admin_router(
         await callback.answer()
 
     return router
-
-
-def _extract_telegram_id(message: Message) -> int:
-    """возвращает telegram id отправителя сообщения"""
-    if message.from_user is None:
-        raise DatabaseError("Не удалось определить telegram_id пользователя.")
-    return message.from_user.id
-
-
-def _is_authorized_admin_message(
-    message: Message, admin_ids: frozenset[int]
-) -> bool:
-    """проверяет что сообщение от администратора из личного чата"""
-    if message.chat.type != "private":
-        return False
-    if message.from_user is None:
-        return False
-    return message.from_user.id in admin_ids
-
-
-def _is_authorized_admin_callback(
-    callback: CallbackQuery, admin_ids: frozenset[int]
-) -> bool:
-    """проверяет что callback от администратора из личного чата"""
-    message = callback.message
-    if message is None or message.chat.type != "private":
-        return False
-    return callback.from_user.id in admin_ids
 
 
 async def _send_summary(
@@ -281,7 +249,7 @@ async def _send_all_statistics(
         return
 
     report = _build_all_statistics_report(content, statistics)
-    chunks = _split_report(report)
+    chunks = split_report(report)
     for index, chunk in enumerate(chunks):
         is_last_chunk = index == len(chunks) - 1
         await message.answer(
@@ -363,25 +331,3 @@ def _format_values(values: list[str]) -> str:
     return "\n".join(values)
 
 
-def _split_report(report: str) -> list[str]:
-    """делит длинный отчёт на сообщения telegram"""
-    chunks: list[str] = []
-    current_lines: list[str] = []
-    current_length = 0
-
-    for line in report.splitlines():
-        line_length = len(line) + 1
-        if (
-            current_length + line_length > TELEGRAM_MESSAGE_LIMIT
-            and len(current_lines) > 0
-        ):
-            chunks.append("\n".join(current_lines))
-            current_lines = []
-            current_length = 0
-        current_lines.append(line)
-        current_length += line_length
-
-    if len(current_lines) > 0:
-        chunks.append("\n".join(current_lines))
-
-    return chunks

@@ -198,13 +198,12 @@ def rounds_plan(player_count: int) -> RoundsPlan:
     )
 
 
-def vote_leaders(votes: dict[int, int]) -> tuple[list[int], int]:
-    """возвращает кандидатов с наибольшим числом голосов и это число"""
+def vote_leaders(votes: dict[int, int]) -> list[int]:
+    """возвращает кандидатов с наибольшим числом голосов"""
     if len(votes) == 0:
-        return [], 0
+        return []
     counts: dict[int, int] = {}
     for candidate in votes.values():
         counts[candidate] = counts.get(candidate, 0) + 1
     top = max(counts.values())
-    leaders = [candidate for candidate, count in counts.items() if count == top]
-    return leaders, top
+    return [candidate for candidate, count in counts.items() if count == top]
