@@ -344,13 +344,11 @@ async def _exercise_storage() -> None:
     await restore_group_sessions(storage, games, empty)
     assert empty == {}
 
-    dgs = DangerousGroup(
-        host_id=2,
-        explaining_team=1,
-        explainer_id=9,
-        explainer_name="Боря",
-    )
-    dgs.current_word = "тайна"
+    dgs = DangerousGroup(host_id=2)
+    dgs.words = [None, "тайна"]
+    dgs.explainer_ids = [None, 9]
+    dgs.explainer_names = [None, "Боря"]
+    dgs.sent = [False, True]
     dgs.boss_revealed = True
     dgs.issued_curses = {"c1"}
     await _dg_persist(storage, {-200: dgs})
@@ -358,8 +356,8 @@ async def _exercise_storage() -> None:
     await restore_dangerous_sessions(storage, dg_restored)
     assert set(dg_restored) == {-200}
     dgr = dg_restored[-200]
-    assert dgr.explaining_team == 1 and dgr.explainer_name == "Боря"
-    assert dgr.current_word == "тайна" and dgr.boss_revealed is True
+    assert dgr.words == [None, "тайна"] and dgr.explainer_names[1] == "Боря"
+    assert dgr.sent == [False, True] and dgr.boss_revealed is True
     assert dgr.issued_curses == {"c1"}
     await storage.replace_session_scope("dangerous", {})
 
@@ -584,24 +582,21 @@ def test_chat_lock_serializes() -> None:
 def test_dangerous_group_helpers() -> None:
     """проверяет чистую логику командных «опасных слов»"""
     content = load_dangerous_words_content(DATA_DIR)
-    session = DangerousGroup(
-        host_id=1,
-        explaining_team=0,
-        explainer_id=None,
-        explainer_name=None,
-    )
+    session = DangerousGroup(host_id=1)
     board = _render_dg_board(session)
-    assert "Загадывает: Команда 2" in board
-    assert "Объясняет: Команда 1" in board
-    assert "Объясняющий: не выбран" in board
+    assert "обе команды играют одновременно" in board
+    assert "Команда 1: слово не взято" in board
+    assert "объясняющий не выбран" in board
     assert "в колоде" in board
 
-    session.explaining_team = 1
-    session.explainer_name = "Аня"
+    session.words[1] = "тайна"
+    session.explainer_names[1] = "Аня"
+    session.sent[1] = True
     session.boss_revealed = True
     board2 = _render_dg_board(session)
-    assert "Загадывает: Команда 1" in board2
-    assert "Объясняющий: Аня" in board2
+    assert "Команда 2: слово взято" in board2
+    assert "объясняющий Аня" in board2
+    assert "отправлено" in board2
     assert "Босс: раскрыт" in board2
 
     issued: set[str] = set()

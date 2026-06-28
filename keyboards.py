@@ -39,12 +39,12 @@ from constants import (
     CB_BK_VOTE_TALLY,
     CB_DG_BOSS,
     CB_DG_CURSE,
-    CB_DG_EXPLAIN,
+    CB_DG_EXPLAIN_PREFIX,
     CB_DG_FINISH,
     CB_DG_NEXT,
     CB_DG_OPEN,
-    CB_DG_SEND,
-    CB_DG_WORD,
+    CB_DG_SEND_PREFIX,
+    CB_DG_WORD_PREFIX,
     CB_GS_CANCEL,
     CB_GS_FINISH,
     CB_GS_JOIN_PREFIX,
@@ -66,13 +66,10 @@ from constants import (
     DANGEROUS_WORDS_GAME_TITLE,
     DG_BOSS_TITLE,
     DG_CURSE_TITLE,
-    DG_EXPLAIN_TITLE,
     DG_FINISH_TITLE,
     DG_KEEP_TITLE,
-    DG_NEXT_TITLE,
+    DG_NEW_ROUND_TITLE,
     DG_REROLL_TITLE,
-    DG_SEND_TITLE,
-    DG_WORD_TITLE,
     MAX_TEAMS,
     MIN_TEAMS,
     SESSION_CANCEL_TITLE,
@@ -140,42 +137,51 @@ def create_group_menu_keyboard(
 
 
 def create_dangerous_group_keyboard() -> InlineKeyboardMarkup:
-    """создаёт клавиатуру командной партии «опасные слова» в беседе"""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+    """создаёт клавиатуру партии «опасные слова»: дорожка на каждую команду"""
+    rows: list[list[InlineKeyboardButton]] = []
+    for team in range(2):
+        suffix = str(team)
+        rows.append(
             [
                 InlineKeyboardButton(
-                    text=DG_EXPLAIN_TITLE, callback_data=CB_DG_EXPLAIN
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=DG_WORD_TITLE, callback_data=CB_DG_WORD
+                    text=f"К{team + 1}: тянуть",
+                    callback_data=CB_DG_WORD_PREFIX + suffix,
                 ),
                 InlineKeyboardButton(
-                    text=DG_SEND_TITLE, callback_data=CB_DG_SEND
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text=DG_NEXT_TITLE, callback_data=CB_DG_NEXT
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=DG_CURSE_TITLE, callback_data=CB_DG_CURSE
+                    text=f"К{team + 1}: объясняю",
+                    callback_data=CB_DG_EXPLAIN_PREFIX + suffix,
                 ),
                 InlineKeyboardButton(
-                    text=DG_BOSS_TITLE, callback_data=CB_DG_BOSS
+                    text=f"К{team + 1}: отправить",
+                    callback_data=CB_DG_SEND_PREFIX + suffix,
                 ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text=DG_FINISH_TITLE, callback_data=CB_DG_FINISH
-                )
-            ],
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text=DG_NEW_ROUND_TITLE, callback_data=CB_DG_NEXT
+            )
         ]
     )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text=DG_CURSE_TITLE, callback_data=CB_DG_CURSE
+            ),
+            InlineKeyboardButton(
+                text=DG_BOSS_TITLE, callback_data=CB_DG_BOSS
+            ),
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text=DG_FINISH_TITLE, callback_data=CB_DG_FINISH
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def create_dg_offer_keyboard(

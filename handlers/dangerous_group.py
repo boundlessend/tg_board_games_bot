@@ -15,17 +15,18 @@ from constants import (
     CB_DG_CURSE,
     CB_DG_CURSE_KEEP,
     CB_DG_CURSE_REROLL,
-    CB_DG_EXPLAIN,
+    CB_DG_EXPLAIN_PREFIX,
     CB_DG_FINISH,
     CB_DG_NEXT,
     CB_DG_OPEN,
-    CB_DG_SEND,
-    CB_DG_WORD,
+    CB_DG_SEND_PREFIX,
+    CB_DG_WORD_PREFIX,
     DANGEROUS_WORDS_GAME_ID,
     team_label,
 )
 from database import DatabaseError, SQLiteHistoryStorage
 from handlers.common import (
+    data_startswith,
     lookup_chat_session,
     make_chat_lock_middleware,
     make_persist_middleware,
@@ -45,13 +46,22 @@ _SCOPE = "dangerous"
 
 @dataclass
 class DangerousGroup:
-    """состояние командной партии «опасные слова» в чате"""
+    """состояние партии «опасные слова»: по слову-дорожке на каждую команду
+
+    обе команды играют одновременно. на команду t: words[t] - её секретное
+    слово (соперники тянут его и пишут запретные), explainer_ids[t] -
+    объясняющий этой команды, sent[t] - доставлено ли слово объясняющему
+    """
 
     host_id: int
-    explaining_team: int
-    explainer_id: int | None
-    explainer_name: str | None
-    current_word: str | None = None
+    words: list[str | None] = field(default_factory=lambda: [None, None])
+    explainer_ids: list[int | None] = field(
+        default_factory=lambda: [None, None]
+    )
+    explainer_names: list[str | None] = field(
+        default_factory=lambda: [None, None]
+    )
+    sent: list[bool] = field(default_factory=lambda: [False, False])
     boss_revealed: bool = False
     boss_pending: bool = False
     issued_words: set[str] = field(default_factory=set)
@@ -88,12 +98,7 @@ def create_dangerous_group_router(
                 "Командные «Опасные слова» - в беседе.", show_alert=True
             )
             return
-        session = DangerousGroup(
-            host_id=callback.from_user.id,
-            explaining_team=0,
-            explainer_id=None,
-            explainer_name=None,
-        )
+        session = DangerousGroup(host_id=callback.from_user.id)
         sessions[message.chat.id] = session
         await message.answer(
             _render_board(session),
@@ -101,23 +106,25 @@ def create_dangerous_group_router(
         )
         await callback.answer()
 
-    @router.callback_query(F.data == CB_DG_EXPLAIN)
+    @router.callback_query(data_startswith(CB_DG_EXPLAIN_PREFIX))
     async def handle_explain(callback: CallbackQuery) -> None:
-        """назначает объясняющего из объясняющей команды"""
+        """назначает объясняющего команды (он объясняет слово своей команде)"""
         session, _ = lookup_chat_session(callback, sessions)
-        if session is None:
+        team = _parse_team(callback.data, CB_DG_EXPLAIN_PREFIX)
+        if session is None or team is None:
             await callback.answer()
             return
-        session.explainer_id = callback.from_user.id
-        session.explainer_name = callback.from_user.full_name
+        session.explainer_ids[team] = callback.from_user.id
+        session.explainer_names[team] = callback.from_user.full_name
         await _edit_board(callback, session)
-        await callback.answer("Ты объясняешь.")
+        await callback.answer(f"Ты объясняешь за {team_label(team)}.")
 
-    @router.callback_query(F.data == CB_DG_WORD)
+    @router.callback_query(data_startswith(CB_DG_WORD_PREFIX))
     async def handle_word(callback: CallbackQuery) -> None:
-        """тянет слово в ЛС загадывающей команде, чтобы написать запретные"""
+        """тянет секретное слово команды в ЛС соперникам - писать запретные"""
         session, _ = lookup_chat_session(callback, sessions)
-        if session is None:
+        team = _parse_team(callback.data, CB_DG_WORD_PREFIX)
+        if session is None or team is None:
             await callback.answer()
             return
         bot = callback.bot
@@ -137,31 +144,40 @@ def create_dangerous_group_router(
             return
 
         word = pick_word(pool, session.issued_words)
-        session.current_word = word
+        session.words[team] = word
+        session.sent[team] = False
         try:
-            await bot.send_message(callback.from_user.id, f"Слово: {word}")
+            await bot.send_message(
+                callback.from_user.id,
+                f"Слово {team_label(team)}: {word}\n"
+                "Напишите запретные слова, затем «отправить».",
+            )
         except TelegramForbiddenError:
             await callback.answer(
                 "Не дошло: нужен /start в личке с ботом.", show_alert=True
             )
             return
-        await callback.answer(
-            "Слово у тебя в ЛС: покажи команде, напиши запретные."
-        )
+        await _edit_board(callback, session)
+        await callback.answer("Слово в ЛС: напишите запретные.")
 
-    @router.callback_query(F.data == CB_DG_SEND)
+    @router.callback_query(data_startswith(CB_DG_SEND_PREFIX))
     async def handle_send(callback: CallbackQuery) -> None:
-        """отправляет вытянутое слово объясняющему из другой команды"""
+        """отправляет секретное слово команды её объясняющему"""
         session, _ = lookup_chat_session(callback, sessions)
-        if session is None:
+        team = _parse_team(callback.data, CB_DG_SEND_PREFIX)
+        if session is None or team is None:
             await callback.answer()
             return
-        if session.current_word is None:
-            await callback.answer("Сначала вытяните слово.", show_alert=True)
-            return
-        if session.explainer_id is None:
+        word = session.words[team]
+        explainer_id = session.explainer_ids[team]
+        if word is None:
             await callback.answer(
-                "Из объясняющей команды нажмите «Я объясняю».",
+                "Сначала вытяните слово этой команды.", show_alert=True
+            )
+            return
+        if explainer_id is None:
+            await callback.answer(
+                f"Объясняющий {team_label(team)} не выбран («объясняю»).",
                 show_alert=True,
             )
             return
@@ -171,7 +187,7 @@ def create_dangerous_group_router(
             return
         try:
             await bot.send_message(
-                session.explainer_id, f"Слово: {session.current_word}"
+                explainer_id, f"Слово для объяснения: {word}"
             )
         except TelegramForbiddenError:
             await callback.answer(
@@ -179,24 +195,28 @@ def create_dangerous_group_router(
                 show_alert=True,
             )
             return
+        session.sent[team] = True
+        await _edit_board(callback, session)
         await callback.answer("Слово ушло объясняющему в ЛС.")
 
     @router.callback_query(F.data == CB_DG_NEXT)
-    async def handle_next(callback: CallbackQuery) -> None:
-        """меняет роли команд (загадывает/объясняет) - только ведущий"""
+    async def handle_new_round(callback: CallbackQuery) -> None:
+        """сбрасывает обе дорожки для нового раунда - только ведущий"""
         session, _ = lookup_chat_session(callback, sessions)
         if session is None:
             await callback.answer()
             return
         if callback.from_user.id != session.host_id:
-            await callback.answer("Ход передаёт ведущий.", show_alert=True)
+            await callback.answer(
+                "Новый раунд запускает ведущий.", show_alert=True
+            )
             return
-        session.explaining_team = 1 - session.explaining_team
-        session.explainer_id = None
-        session.explainer_name = None
-        session.current_word = None
+        session.words = [None, None]
+        session.explainer_ids = [None, None]
+        session.explainer_names = [None, None]
+        session.sent = [False, False]
         await _edit_board(callback, session)
-        await callback.answer()
+        await callback.answer("Новый раунд: тяните слова заново.")
 
     @router.callback_query(F.data == CB_DG_CURSE)
     async def handle_curse(callback: CallbackQuery) -> None:
@@ -400,10 +420,10 @@ def _dump_session(session: DangerousGroup) -> dict[str, Any]:
     """сериализует партию «опасные слова» в словарь"""
     return {
         "host_id": session.host_id,
-        "explaining_team": session.explaining_team,
-        "explainer_id": session.explainer_id,
-        "explainer_name": session.explainer_name,
-        "current_word": session.current_word,
+        "words": session.words,
+        "explainer_ids": session.explainer_ids,
+        "explainer_names": session.explainer_names,
+        "sent": session.sent,
         "boss_revealed": session.boss_revealed,
         "boss_pending": session.boss_pending,
         "issued_words": list(session.issued_words),
@@ -416,10 +436,10 @@ def _load_session(data: dict[str, Any]) -> DangerousGroup:
     """восстанавливает партию «опасные слова» из словаря"""
     return DangerousGroup(
         host_id=data["host_id"],
-        explaining_team=data["explaining_team"],
-        explainer_id=data["explainer_id"],
-        explainer_name=data["explainer_name"],
-        current_word=data["current_word"],
+        words=list(data["words"]),
+        explainer_ids=list(data["explainer_ids"]),
+        explainer_names=list(data["explainer_names"]),
+        sent=list(data["sent"]),
         boss_revealed=data["boss_revealed"],
         boss_pending=data["boss_pending"],
         issued_words=set(data["issued_words"]),
@@ -445,7 +465,14 @@ async def restore_dangerous_sessions(
     """наполняет словарь партий снапшотами из хранилища при старте"""
     raw = await storage.load_session_scope(_SCOPE)
     for key, data in raw.items():
-        sessions[int(key)] = _load_session(json.loads(data))
+        try:
+            sessions[int(key)] = _load_session(json.loads(data))
+        except (KeyError, ValueError, TypeError, json.JSONDecodeError):
+            # снапшот несовместимой/повреждённой схемы - пропускаем
+            logger.exception(
+                "session_restore_failed",
+                extra={"scope": _SCOPE, "key": key},
+            )
 
 
 async def _edit_board(
@@ -463,6 +490,18 @@ async def _edit_board(
             pass
 
 
+def _parse_team(data: str | None, prefix: str) -> int | None:
+    """извлекает индекс команды (0 или 1) из callback-данных"""
+    if data is None:
+        return None
+    suffix = data[len(prefix):]
+    if suffix == "0":
+        return 0
+    if suffix == "1":
+        return 1
+    return None
+
+
 def _curse_text(curse: Curse) -> str:
     """текст сообщения с проклятием"""
     return f"Проклятие: {curse.title}\n{curse.description}"
@@ -474,22 +513,21 @@ def _boss_text(boss: Boss) -> str:
 
 
 def _render_board(session: DangerousGroup) -> str:
-    """рисует поле командной партии «опасные слова»"""
-    explaining = session.explaining_team
-    drawing = 1 - explaining
-    explainer = session.explainer_name or "не выбран"
+    """рисует поле партии «опасные слова»: статус обеих дорожек"""
     boss = "раскрыт" if session.boss_revealed else "в колоде (финал)"
-    return "\n".join(
-        [
-            "Опасные слова - 2 команды.",
-            f"Загадывает: {team_label(drawing)}. "
-            f"Объясняет: {team_label(explaining)}.",
-            f"Объясняющий: {explainer}.",
-            "",
-            f"{team_label(drawing)} жмёт «Тянуть слово» (придёт ей в ЛС), "
-            "пишет запретные, затем «Отправить слово».",
-            f"Объясняющему из {team_label(explaining)} слово придёт в ЛС: "
-            "он объясняет, не называя запретных.",
-            f"Босс: {boss}.",
-        ]
-    )
+    lines = [
+        "Опасные слова - обе команды играют одновременно.",
+        "Соперники тянут секретное слово команды (придёт им в ЛС) и пишут "
+        "запретные; объясняющий команды объясняет его своим.",
+        "",
+    ]
+    for team in range(2):
+        word_state = "взято" if session.words[team] else "не взято"
+        explainer = session.explainer_names[team] or "не выбран"
+        sent_state = "отправлено" if session.sent[team] else "не отправлено"
+        lines.append(
+            f"{team_label(team)}: слово {word_state}, "
+            f"объясняющий {explainer}, {sent_state}."
+        )
+    lines.extend(["", f"Босс: {boss}."])
+    return "\n".join(lines)
