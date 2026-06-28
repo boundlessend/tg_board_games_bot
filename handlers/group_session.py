@@ -280,7 +280,7 @@ def create_group_session_router(
 
     @router.callback_query(F.data == CB_GS_SCORE)
     async def handle_score(callback: CallbackQuery) -> None:
-        """начисляет очко текущей команде и выдаёт следующее слово"""
+        """начисляет очко; следующее слово берут вручную «Слово в ЛС»"""
         session, _ = lookup_chat_session(callback, sessions)
         if session is None or not session.started:
             await callback.answer()
@@ -292,12 +292,9 @@ def create_group_session_router(
             await callback.answer("Сначала возьми слово.", show_alert=True)
             return
 
-        delivered = await _deliver_word(
-            callback, session, storage, session.explainer_id
-        )
-        if not delivered:
-            return
         session.scores[session.current_team] += 1
+        # слово отыграно: следующее берут кнопкой «Слово в ЛС», не авто
+        session.explainer_id = None
         await edit_menu(
             callback, _render_play(session), create_session_play_keyboard()
         )
