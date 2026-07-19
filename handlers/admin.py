@@ -8,15 +8,12 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from constants import (
     BOSSES_HISTORY_KEY,
-    BOSSES_LIMIT,
     CB_ADMIN_ACTIVITY,
     CB_ADMIN_CLOSE,
     CB_ADMIN_CSV,
     CB_ADMIN_STATS,
     CURSES_HISTORY_KEY,
-    CURSES_LIMIT,
     WORDS_HISTORY_KEY,
-    WORDS_LIMIT,
 )
 from database import DatabaseError, SQLiteHistoryStorage, iso_days_ago
 from handlers.common import (
@@ -66,9 +63,7 @@ def create_admin_router(
     async def handle_admin_stats_request(callback: CallbackQuery) -> None:
         message = callback.message
         if isinstance(message, Message):
-            await _send_all_statistics(
-                message, content, storage, callback.from_user.id
-            )
+            await _send_all_statistics(message, content, storage, callback.from_user.id)
         await callback.answer()
 
     @router.callback_query(F.data == CB_ADMIN_CSV)
@@ -88,9 +83,7 @@ def create_admin_router(
                     "action": "admin_csv",
                 },
             )
-            await callback.answer(
-                "Не удалось получить статистику.", show_alert=True
-            )
+            await callback.answer("Не удалось получить статистику.", show_alert=True)
             return
 
         document = BufferedInputFile(
@@ -117,9 +110,7 @@ def create_admin_router(
                     "action": "admin_activity",
                 },
             )
-            await callback.answer(
-                "Не удалось получить активность.", show_alert=True
-            )
+            await callback.answer("Не удалось получить активность.", show_alert=True)
             return
 
         await message.answer(
@@ -176,22 +167,14 @@ def _build_summary(
     if len(statistics) == 0:
         return "Статистика пока пустая."
 
-    total_words = sum(
-        len(user[WORDS_HISTORY_KEY]) for user in statistics.values()
-    )
-    total_curses = sum(
-        len(user[CURSES_HISTORY_KEY]) for user in statistics.values()
-    )
-    total_bosses = sum(
-        len(user[BOSSES_HISTORY_KEY]) for user in statistics.values()
-    )
+    total_words = sum(len(user[WORDS_HISTORY_KEY]) for user in statistics.values())
+    total_curses = sum(len(user[CURSES_HISTORY_KEY]) for user in statistics.values())
+    total_bosses = sum(len(user[BOSSES_HISTORY_KEY]) for user in statistics.values())
 
     word_counter: Counter[str] = Counter()
     for user in statistics.values():
         word_counter.update(user[WORDS_HISTORY_KEY])
-    top_words = [
-        f"{word} x{count}" for word, count in word_counter.most_common(10)
-    ]
+    top_words = [f"{word} x{count}" for word, count in word_counter.most_common(10)]
 
     sections = [
         "Сводка",
@@ -288,16 +271,14 @@ def _build_user_statistics_report(
 
     sections = [
         f"Статистика пользователя {telegram_id}",
-        f"Слова: {len(words)}/{WORDS_LIMIT}",
+        f"Слова: {len(words)}/{len(content.words)}",
         _format_values(words),
-        f"Проклятья: {len(curse_ids)}/{CURSES_LIMIT}",
+        f"Проклятья: {len(curse_ids)}/{len(content.curses)}",
         _format_values(
             [_format_curse(curse_id, curse_titles) for curse_id in curse_ids]
         ),
-        f"Боссы: {len(boss_ids)}/{BOSSES_LIMIT}",
-        _format_values(
-            [_format_boss(boss_id, boss_names) for boss_id in boss_ids]
-        ),
+        f"Боссы: {len(boss_ids)}/{len(content.bosses)}",
+        _format_values([_format_boss(boss_id, boss_names) for boss_id in boss_ids]),
     ]
     return "\n\n".join(sections)
 
@@ -329,5 +310,3 @@ def _format_values(values: list[str]) -> str:
     if len(values) == 0:
         return "пока пусто"
     return "\n".join(values)
-
-

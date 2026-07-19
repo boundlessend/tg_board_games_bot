@@ -25,9 +25,7 @@ def create_content_admin_router(
 ) -> Router:
     """создаёт роутер админских команд добавления контента"""
     router = Router()
-    word_pools = {DANGEROUS_WORDS_GAME_ID} | {
-        game.game_id for game in word_games
-    }
+    word_pools = {DANGEROUS_WORDS_GAME_ID} | {game.game_id for game in word_games}
 
     def _admin_filter(message: Message) -> bool:
         return is_private_admin(message, admin_ids)
@@ -35,9 +33,7 @@ def create_content_admin_router(
     router.message.filter(_admin_filter)
 
     @router.message(Command("addword"))
-    async def handle_add_word(
-        message: Message, command: CommandObject
-    ) -> None:
+    async def handle_add_word(message: Message, command: CommandObject) -> None:
         parts = (command.args or "").strip().split(maxsplit=1)
         if len(parts) < 2:
             await message.answer(_addword_usage(word_pools))
@@ -52,9 +48,7 @@ def create_content_admin_router(
             await message.answer("Слово пустое.")
             return
         if len(word) > MAX_CONTENT_LEN:
-            await message.answer(
-                f"Слово длиннее {MAX_CONTENT_LEN} символов."
-            )
+            await message.answer(f"Слово длиннее {MAX_CONTENT_LEN} символов.")
             return
 
         try:
@@ -78,9 +72,7 @@ def create_content_admin_router(
         await message.answer(f"Добавлено в «{game_id}»: {word}")
 
     @router.message(Command("addcurse"))
-    async def handle_add_curse(
-        message: Message, command: CommandObject
-    ) -> None:
+    async def handle_add_curse(message: Message, command: CommandObject) -> None:
         pair = _parse_pair(command.args)
         if pair is None:
             await message.answer("Формат: /addcurse <название> | <описание>")
@@ -110,9 +102,7 @@ def create_content_admin_router(
         await message.answer(f"Проклятье добавлено: {title}")
 
     @router.message(Command("addboss"))
-    async def handle_add_boss(
-        message: Message, command: CommandObject
-    ) -> None:
+    async def handle_add_boss(message: Message, command: CommandObject) -> None:
         pair = _parse_pair(command.args)
         if pair is None:
             await message.answer("Формат: /addboss <имя> | <описание>")
@@ -120,9 +110,7 @@ def create_content_admin_router(
 
         name, description = pair
         if len(name) > MAX_CONTENT_LEN or len(description) > MAX_CONTENT_LEN:
-            await message.answer(
-                f"Имя/описание длиннее {MAX_CONTENT_LEN} символов."
-            )
+            await message.answer(f"Имя/описание длиннее {MAX_CONTENT_LEN} символов.")
             return
         try:
             await storage.add_custom_boss(name, description)
@@ -143,10 +131,16 @@ def create_content_admin_router(
 
     @router.message(Command("backup"))
     async def handle_backup(message: Message) -> None:
-        document = FSInputFile(
-            storage.database_path, filename="bot.sqlite3"
-        )
-        await message.answer_document(document, caption="Бэкап базы")
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp) / "bot.sqlite3"
+            try:
+                await storage.backup_snapshot(snapshot)
+            except DatabaseError:
+                logger.exception("database_error", extra={"action": "backup"})
+                await message.answer("Не удалось сделать снимок базы.")
+                return
+            document = FSInputFile(snapshot, filename="bot.sqlite3")
+            await message.answer_document(document, caption="Бэкап базы")
 
     @router.message(_is_restore_document)
     async def handle_restore(message: Message) -> None:
@@ -160,9 +154,7 @@ def create_content_admin_router(
             try:
                 await bot.download(document, destination=destination)
             except (TelegramBadRequest, TelegramNetworkError, OSError):
-                logger.exception(
-                    "download_failed", extra={"action": "restore"}
-                )
+                logger.exception("download_failed", extra={"action": "restore"})
                 await message.answer("Не удалось скачать файл.")
                 return
 
@@ -177,9 +169,7 @@ def create_content_admin_router(
                     "database_error",
                     extra={
                         "telegram_id": (
-                            message.from_user.id
-                            if message.from_user
-                            else None
+                            message.from_user.id if message.from_user else None
                         ),
                         "action": "restore",
                     },
@@ -191,9 +181,7 @@ def create_content_admin_router(
 
     @router.message(Command("restore"))
     async def handle_restore_hint(message: Message) -> None:
-        await message.answer(
-            "Пришлите файл базы (.sqlite3) с подписью /restore."
-        )
+        await message.answer("Пришлите файл базы (.sqlite3) с подписью /restore.")
 
     @router.message(Command("listcontent"))
     async def handle_list_content(message: Message) -> None:
@@ -204,13 +192,11 @@ def create_content_admin_router(
                 sections.append(f"{game_id}: {_format_items(words)}")
             curses = await storage.get_custom_curses()
             sections.append(
-                "проклятья: "
-                + _format_items([f"{c.id} - {c.title}" for c in curses])
+                "проклятья: " + _format_items([f"{c.id} - {c.title}" for c in curses])
             )
             bosses = await storage.get_custom_bosses()
             sections.append(
-                "боссы: "
-                + _format_items([f"{b.id} - {b.name}" for b in bosses])
+                "боссы: " + _format_items([f"{b.id} - {b.name}" for b in bosses])
             )
         except DatabaseError:
             logger.exception(
@@ -224,9 +210,7 @@ def create_content_admin_router(
             await message.answer(chunk)
 
     @router.message(Command("delword"))
-    async def handle_del_word(
-        message: Message, command: CommandObject
-    ) -> None:
+    async def handle_del_word(message: Message, command: CommandObject) -> None:
         parts = (command.args or "").strip().split(maxsplit=1)
         if len(parts) < 2 or parts[0] not in word_pools:
             await message.answer(
@@ -240,9 +224,7 @@ def create_content_admin_router(
                 parts[0], parts[1].strip().lower()
             )
         except DatabaseError:
-            logger.exception(
-                "database_error", extra={"action": "del_word"}
-            )
+            logger.exception("database_error", extra={"action": "del_word"})
             await message.answer("Не удалось удалить слово.")
             return
 
@@ -251,9 +233,7 @@ def create_content_admin_router(
         )
 
     @router.message(Command("delcurse"))
-    async def handle_del_curse(
-        message: Message, command: CommandObject
-    ) -> None:
+    async def handle_del_curse(message: Message, command: CommandObject) -> None:
         row_id = _parse_custom_id(command.args, "cc_")
         if row_id is None:
             await message.answer("Формат: /delcurse <id> (например cc_3)")
@@ -262,18 +242,14 @@ def create_content_admin_router(
         try:
             deleted = await storage.delete_custom_curse(row_id)
         except DatabaseError:
-            logger.exception(
-                "database_error", extra={"action": "del_curse"}
-            )
+            logger.exception("database_error", extra={"action": "del_curse"})
             await message.answer("Не удалось удалить проклятье.")
             return
 
         await message.answer("Удалено." if deleted else "Такого проклятья нет.")
 
     @router.message(Command("delboss"))
-    async def handle_del_boss(
-        message: Message, command: CommandObject
-    ) -> None:
+    async def handle_del_boss(message: Message, command: CommandObject) -> None:
         row_id = _parse_custom_id(command.args, "cb_")
         if row_id is None:
             await message.answer("Формат: /delboss <id> (например cb_3)")
@@ -282,9 +258,7 @@ def create_content_admin_router(
         try:
             deleted = await storage.delete_custom_boss(row_id)
         except DatabaseError:
-            logger.exception(
-                "database_error", extra={"action": "del_boss"}
-            )
+            logger.exception("database_error", extra={"action": "del_boss"})
             await message.answer("Не удалось удалить босса.")
             return
 
@@ -295,8 +269,7 @@ def create_content_admin_router(
         caption_parts = (message.caption or "").strip().split()
         if len(caption_parts) < 2 or caption_parts[1] not in word_pools:
             await message.answer(
-                f"Подпись: /importwords <игра>\n"
-                f"Игры: {', '.join(sorted(word_pools))}"
+                f"Подпись: /importwords <игра>\nИгры: {', '.join(sorted(word_pools))}"
             )
             return
 
@@ -311,9 +284,7 @@ def create_content_admin_router(
             try:
                 await bot.download(document, destination=destination)
             except (TelegramBadRequest, TelegramNetworkError, OSError):
-                logger.exception(
-                    "download_failed", extra={"action": "import"}
-                )
+                logger.exception("download_failed", extra={"action": "import"})
                 await message.answer("Не удалось скачать файл.")
                 return
 

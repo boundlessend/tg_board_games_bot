@@ -57,6 +57,7 @@ DANGEROUS_WORDS_GAME_ID = "dangerous_words"
 
 CB_BK_OPEN = "bk:open"
 CB_BK_JOIN = "bk:join"
+CB_BK_LEAVE = "bk:leave"
 CB_BK_START = "bk:start"
 CB_BK_CANCEL = "bk:cancel"
 CB_BK_REVEAL = "bk:reveal"
@@ -78,6 +79,7 @@ BUNKER_STORY_NO_TITLE = "Не справились"
 
 BUNKER_GAME_TITLE = "Бункер"
 BUNKER_JOIN_TITLE = "Вступить в бункер"
+BUNKER_LEAVE_TITLE = "Покинуть лобби"
 BUNKER_START_TITLE = "Начать"
 BUNKER_CANCEL_TITLE = "Отменить игру"
 BUNKER_REVEAL_TITLE = "Открыть мою карту"
@@ -117,10 +119,7 @@ DG_FINISH_TITLE = "Завершить"
 DG_KEEP_TITLE = "Принять"
 DG_REROLL_TITLE = "Реролл"
 
-BOSSES_LIMIT = 200
-CURSES_LIMIT = 200
 TELEGRAM_MESSAGE_LIMIT = 3500
-WORDS_LIMIT = 1600
 MAX_CONTENT_LEN = 500
 
 BOSSES_HISTORY_KEY = "bosses"

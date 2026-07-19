@@ -18,6 +18,7 @@ from constants import (
     BUNKER_CARD_LABELS,
     CB_BK_CANCEL,
     CB_BK_JOIN,
+    CB_BK_LEAVE,
     CB_BK_MODE,
     CB_BK_NEXT,
     CB_BK_OPEN,
@@ -101,6 +102,7 @@ class BunkerSession:
     finale_queue: list[Challenge] = field(default_factory=list)
     finale_index: int = 0
     story_votes: dict[int, bool] = field(default_factory=dict)
+    hands_delivered: set[int] = field(default_factory=set)
 
 
 @dataclass
@@ -112,6 +114,9 @@ class SoloLobby:
     message_id: int | None = None
     started: bool = False
     members: dict[int, str] = field(default_factory=dict)
+    hands: dict[int, PlayerHand] = field(default_factory=dict)
+    intro: str = ""
+    delivered: set[int] = field(default_factory=set)
 
 
 def create_bunker_router(
@@ -163,6 +168,7 @@ def create_bunker_router(
             return
         if message.chat.type == "private":
             host_id = message.from_user.id
+            _leave_current_lobby(host_id, lobbies, member_lobby)
             code = _generate_code(set(lobbies))
             lobby = SoloLobby(host_id=host_id, code=code)
             lobby.members[host_id] = message.from_user.full_name
@@ -186,9 +192,7 @@ def create_bunker_router(
             await callback.answer()
             return
         if message.chat.type not in ("group", "supergroup"):
-            await callback.answer(
-                "«Бункер» доступен в беседе.", show_alert=True
-            )
+            await callback.answer("«Бункер» доступен в беседе.", show_alert=True)
             return
         await _open_group_lobby(message, callback.from_user.id)
         await callback.answer()
@@ -206,6 +210,22 @@ def create_bunker_router(
         session.players[callback.from_user.id] = callback.from_user.full_name
         await _edit_board(callback, session)
         await callback.answer("Ты в убежище.")
+
+    @router.callback_query(F.data == CB_BK_LEAVE)
+    async def handle_leave(callback: CallbackQuery) -> None:
+        """убирает игрока из лобби до старта партии"""
+        session = sessions.get(_chat_id(callback))
+        if session is None or session.phase != "lobby":
+            await callback.answer()
+            return
+        player_id = callback.from_user.id
+        if session.players.pop(player_id, None) is None:
+            await callback.answer("Ты не в лобби.", show_alert=True)
+            return
+        session.hands.pop(player_id, None)
+        session.hands_delivered.discard(player_id)
+        await _edit_board(callback, session)
+        await callback.answer("Ты покинул лобби.")
 
     @router.callback_query(F.data == CB_BK_MODE)
     async def handle_mode(callback: CallbackQuery) -> None:
@@ -249,12 +269,17 @@ def create_bunker_router(
             session.hands = dict(
                 zip(session.players, deal_hands(content, count), strict=True)
             )
+            session.hands_delivered = set()
         unreachable: list[str] = []
         for player_id, hand in session.hands.items():
+            if player_id in session.hands_delivered:
+                continue
             try:
                 await bot.send_message(player_id, _render_hand(hand))
             except TelegramForbiddenError:
                 unreachable.append(session.players[player_id])
+                continue
+            session.hands_delivered.add(player_id)
         if unreachable:
             await callback.answer(
                 "Не дошли карты: " + ", ".join(unreachable) + ". Им нужно "
@@ -330,11 +355,9 @@ def create_bunker_router(
             return
         voter_id = callback.from_user.id
         if voter_id not in session.players or voter_id in session.excluded:
-            await callback.answer(
-                "Голосуют только активные игроки.", show_alert=True
-            )
+            await callback.answer("Голосуют только активные игроки.", show_alert=True)
             return
-        candidate = _parse_int((callback.data or "")[len(CB_BK_VOTE_PREFIX):])
+        candidate = _parse_int((callback.data or "")[len(CB_BK_VOTE_PREFIX) :])
         if candidate is None or candidate not in session.vote_candidates:
             await callback.answer()
             return
@@ -417,11 +440,10 @@ def create_bunker_router(
             await message.answer("Бункер переполнен.")
             return
 
+        _leave_current_lobby(member_id, lobbies, member_lobby)
         lobby.members[member_id] = message.from_user.full_name
         member_lobby[member_id] = code
-        await message.answer(
-            f"Ты в убежище. Код {code}. Жди старта от создателя."
-        )
+        await message.answer(f"Ты в убежище. Код {code}. Жди старта от создателя.")
         bot = message.bot
         if bot is not None and lobby.message_id is not None:
             try:
@@ -456,22 +478,30 @@ def create_bunker_router(
             await callback.answer()
             return
 
-        hands = deal_hands(content, count)
-        intro = _render_solo_intro(
-            pick_catastrophe(content),
-            pick_pairs(content, ROUNDS_TOTAL),
-            rounds_plan(count),
-            count,
-        )
+        # руки и общий стол фиксируются: повтор «Начать» после недоставки
+        # дошлёт те же карты только тем, кому ещё не дошло
+        if set(lobby.hands) != set(lobby.members):
+            lobby.hands = dict(
+                zip(lobby.members, deal_hands(content, count), strict=True)
+            )
+            lobby.intro = _render_solo_intro(
+                pick_catastrophe(content),
+                pick_pairs(content, ROUNDS_TOTAL),
+                rounds_plan(count),
+                count,
+            )
+            lobby.delivered = set()
         unreachable: list[str] = []
-        for (member_id, name), hand in zip(
-            lobby.members.items(), hands, strict=True
-        ):
+        for member_id, name in lobby.members.items():
+            if member_id in lobby.delivered:
+                continue
             try:
-                await bot.send_message(member_id, _render_hand(hand))
-                await bot.send_message(member_id, intro)
+                await bot.send_message(member_id, _render_hand(lobby.hands[member_id]))
+                await bot.send_message(member_id, lobby.intro)
             except TelegramForbiddenError:
                 unreachable.append(name)
+                continue
+            lobby.delivered.add(member_id)
         if unreachable:
             await callback.answer(
                 "Не дошли карты: " + ", ".join(unreachable) + ". Им нужно "
@@ -573,9 +603,7 @@ def create_bunker_router(
         await _post_board(callback, session)
         await callback.answer()
 
-    async def _announce_round(
-        callback: CallbackQuery, session: BunkerSession
-    ) -> None:
+    async def _announce_round(callback: CallbackQuery, session: BunkerSession) -> None:
         """публикует исследование бункера нового раунда"""
         bot = callback.bot
         if bot is not None:
@@ -595,9 +623,7 @@ def create_bunker_router(
         await _replace_board(callback, "Бункер закрыт. Игра окончена.")
         await callback.answer()
 
-    async def _start_story(
-        callback: CallbackQuery, session: BunkerSession
-    ) -> None:
+    async def _start_story(callback: CallbackQuery, session: BunkerSession) -> None:
         """запускает развязку «история выживания»"""
         session.survivors_bunker = _alive(session)
         session.survivors_exiles = list(session.excluded)
@@ -605,9 +631,7 @@ def create_bunker_router(
         session.finale_index = 0
         bot = callback.bot
         if bot is not None:
-            await bot.send_message(
-                session.board_chat_id, _render_story_start(session)
-            )
+            await bot.send_message(session.board_chat_id, _render_story_start(session))
         await _present_challenge(callback, session)
 
     async def _present_challenge(
@@ -627,9 +651,7 @@ def create_bunker_router(
         session.story_votes = {}
         bot = callback.bot
         if bot is not None:
-            await bot.send_message(
-                session.board_chat_id, _render_challenge(session)
-            )
+            await bot.send_message(session.board_chat_id, _render_challenge(session))
         await _post_board(callback, session)
         await callback.answer()
 
@@ -653,9 +675,7 @@ def create_bunker_router(
         session.finale_index += 1
         await _present_challenge(callback, session)
 
-    async def _story_verdict(
-        callback: CallbackQuery, session: BunkerSession
-    ) -> None:
+    async def _story_verdict(callback: CallbackQuery, session: BunkerSession) -> None:
         """объявляет, кто пережил историю выживания"""
         bot = callback.bot
         if bot is not None:
@@ -703,9 +723,7 @@ def _dump_bunker(session: BunkerSession) -> dict[str, Any]:
         "votes_pending": session.votes_pending,
         "revote": session.revote,
         "players": session.players,
-        "hands": {
-            str(pid): asdict(hand) for pid, hand in session.hands.items()
-        },
+        "hands": {str(pid): asdict(hand) for pid, hand in session.hands.items()},
         "revealed_count": session.revealed_count,
         "excluded": list(session.excluded),
         "votes": session.votes,
@@ -715,6 +733,7 @@ def _dump_bunker(session: BunkerSession) -> dict[str, Any]:
         "finale_queue": [asdict(ch) for ch in session.finale_queue],
         "finale_index": session.finale_index,
         "story_votes": session.story_votes,
+        "hands_delivered": list(session.hands_delivered),
     }
 
 
@@ -734,12 +753,8 @@ def _load_bunker(data: dict[str, Any]) -> BunkerSession:
     session.votes_pending = data["votes_pending"]
     session.revote = data["revote"]
     session.players = {int(k): v for k, v in data["players"].items()}
-    session.hands = {
-        int(k): PlayerHand(**hand) for k, hand in data["hands"].items()
-    }
-    session.revealed_count = {
-        int(k): v for k, v in data["revealed_count"].items()
-    }
+    session.hands = {int(k): PlayerHand(**hand) for k, hand in data["hands"].items()}
+    session.revealed_count = {int(k): v for k, v in data["revealed_count"].items()}
     session.excluded = {int(pid) for pid in data["excluded"]}
     session.votes = {int(k): v for k, v in data["votes"].items()}
     session.vote_candidates = list(data["vote_candidates"])
@@ -748,6 +763,7 @@ def _load_bunker(data: dict[str, Any]) -> BunkerSession:
     session.finale_queue = [Challenge(**ch) for ch in data["finale_queue"]]
     session.finale_index = data["finale_index"]
     session.story_votes = {int(k): v for k, v in data["story_votes"].items()}
+    session.hands_delivered = {int(pid) for pid in data.get("hands_delivered", [])}
     return session
 
 
@@ -759,6 +775,11 @@ def _dump_lobby(lobby: SoloLobby) -> dict[str, Any]:
         "message_id": lobby.message_id,
         "started": lobby.started,
         "members": lobby.members,
+        "hands": {
+            str(member_id): asdict(hand) for member_id, hand in lobby.hands.items()
+        },
+        "intro": lobby.intro,
+        "delivered": list(lobby.delivered),
     }
 
 
@@ -768,6 +789,11 @@ def _load_lobby(data: dict[str, Any]) -> SoloLobby:
     lobby.message_id = data["message_id"]
     lobby.started = data["started"]
     lobby.members = {int(k): v for k, v in data["members"].items()}
+    lobby.hands = {
+        int(k): PlayerHand(**hand) for k, hand in data.get("hands", {}).items()
+    }
+    lobby.intro = data.get("intro", "")
+    lobby.delivered = {int(pid) for pid in data.get("delivered", [])}
     return lobby
 
 
@@ -777,6 +803,8 @@ async def _persist_bunker(
     lobbies: dict[str, SoloLobby],
 ) -> None:
     """сохраняет снапшот партий бункера и лобби режима «отдельно»"""
+    # ponytail: полная перезапись обоих scope на каждое событие; лобби живут
+    # не только в чате партии, по-ключевой upsert - если станет медленно
     await storage.replace_session_scope(
         _SCOPE,
         {
@@ -786,10 +814,7 @@ async def _persist_bunker(
     )
     await storage.replace_session_scope(
         _LOBBY_SCOPE,
-        {
-            lobby.code: json.dumps(_dump_lobby(lobby))
-            for lobby in lobbies.values()
-        },
+        {lobby.code: json.dumps(_dump_lobby(lobby)) for lobby in lobbies.values()},
     )
 
 
@@ -802,10 +827,24 @@ async def restore_bunker_sessions(
     """наполняет партии, лобби и индекс участников из хранилища при старте"""
     raw_sessions = await storage.load_session_scope(_SCOPE)
     for key, data in raw_sessions.items():
-        sessions[int(key)] = _load_bunker(json.loads(data))
+        try:
+            sessions[int(key)] = _load_bunker(json.loads(data))
+        except (KeyError, ValueError, TypeError, json.JSONDecodeError):
+            # снапшот несовместимой/повреждённой схемы - пропускаем
+            logger.exception(
+                "session_restore_failed",
+                extra={"scope": _SCOPE, "key": key},
+            )
     raw_lobbies = await storage.load_session_scope(_LOBBY_SCOPE)
-    for data in raw_lobbies.values():
-        lobby = _load_lobby(json.loads(data))
+    for key, data in raw_lobbies.items():
+        try:
+            lobby = _load_lobby(json.loads(data))
+        except (KeyError, ValueError, TypeError, json.JSONDecodeError):
+            logger.exception(
+                "session_restore_failed",
+                extra={"scope": _LOBBY_SCOPE, "key": key},
+            )
+            continue
         lobbies[lobby.code] = lobby
         for member_id in lobby.members:
             member_lobby[member_id] = lobby.code
@@ -926,7 +965,9 @@ def _render_board(session: BunkerSession) -> str:
 
     if session.phase == "reveal":
         alive = _alive(session)
-        opened = [p for p in alive if session.revealed_count.get(p, 0) >= session.round_no]
+        opened = [
+            p for p in alive if session.revealed_count.get(p, 0) >= session.round_no
+        ]
         lines.append(f"Откройте по карте. Открыли: {len(opened)}/{len(alive)}")
         lines.append(
             "Дальше - голосование за изгнание."
@@ -1053,15 +1094,11 @@ def _build_finale_queue(
     if session.survivors_exiles:
         for threat in random.sample(content.threats, 2):
             queue.append(Challenge(group="exiles", kind="threat", text=threat))
-    queue.append(
-        Challenge(group="all", kind="catastrophe", text=session.catastrophe)
-    )
+    queue.append(Challenge(group="all", kind="catastrophe", text=session.catastrophe))
     return queue
 
 
-def _challenge_survivors(
-    session: BunkerSession, challenge: Challenge
-) -> list[int]:
+def _challenge_survivors(session: BunkerSession, challenge: Challenge) -> list[int]:
     """возвращает живых членов группы данного испытания"""
     if challenge.group == "bunker":
         return session.survivors_bunker
@@ -1085,9 +1122,7 @@ def _apply_casualty(session: BunkerSession, challenge: Challenge) -> str:
         return f"☢️ Катастрофа сильнее. Погибли все: {names}."
 
     is_bunker = challenge.group == "bunker"
-    group = (
-        session.survivors_bunker if is_bunker else session.survivors_exiles
-    )
+    group = session.survivors_bunker if is_bunker else session.survivors_exiles
     # 0 - маркер карты угрозы; id игрока в telegram всегда положительный
     pick = random.choice([*group, 0])
     if pick == 0:
@@ -1112,12 +1147,8 @@ def _challenge_header(challenge: Challenge) -> str:
 
 def _render_story_start(session: BunkerSession) -> str:
     """отображает старт истории выживания: состав групп"""
-    bunker = ", ".join(
-        session.players[pid] for pid in session.survivors_bunker
-    )
-    exiles = ", ".join(
-        session.players[pid] for pid in session.survivors_exiles
-    )
+    bunker = ", ".join(session.players[pid] for pid in session.survivors_bunker)
+    exiles = ", ".join(session.players[pid] for pid in session.survivors_exiles)
     return "\n".join(
         [
             "🎬 История выживания",
@@ -1133,8 +1164,7 @@ def _render_challenge(session: BunkerSession) -> str:
     challenge = session.finale_queue[session.finale_index]
     icon = "☢️" if challenge.kind == "catastrophe" else "⚠️"
     names = ", ".join(
-        session.players[pid]
-        for pid in _challenge_survivors(session, challenge)
+        session.players[pid] for pid in _challenge_survivors(session, challenge)
     )
     return "\n".join(
         [
@@ -1208,8 +1238,7 @@ def _render_solo_intro(
         "☢️ КАТАСТРОФА",
         catastrophe,
         "",
-        f"Игроков: {count}. Мест в бункере: {plan.seats}. "
-        f"Изгнать: {plan.exclusions}.",
+        f"Игроков: {count}. Мест в бункере: {plan.seats}. Изгнать: {plan.exclusions}.",
         "",
         "📦 Пары бункер+угроза по раундам:",
     ]
@@ -1252,6 +1281,25 @@ def _drop_lobby(
     for member_id in lobby.members:
         member_lobby.pop(member_id, None)
     lobbies.pop(lobby.code, None)
+
+
+def _leave_current_lobby(
+    user_id: int,
+    lobbies: dict[str, SoloLobby],
+    member_lobby: dict[int, str],
+) -> None:
+    """выводит пользователя из его лобби; лобби хоста закрывается целиком"""
+    lobby = _lookup_lobby(user_id, lobbies, member_lobby)
+    if lobby is None:
+        member_lobby.pop(user_id, None)
+        return
+    if lobby.host_id == user_id:
+        _drop_lobby(lobby, lobbies, member_lobby)
+        return
+    lobby.members.pop(user_id, None)
+    lobby.hands.pop(user_id, None)
+    lobby.delivered.discard(user_id)
+    member_lobby.pop(user_id, None)
 
 
 def _chat_id(callback: CallbackQuery) -> int:

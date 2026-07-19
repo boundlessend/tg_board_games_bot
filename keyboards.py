@@ -9,6 +9,7 @@ from constants import (
     BUNKER_CANCEL_TITLE,
     BUNKER_GAME_TITLE,
     BUNKER_JOIN_TITLE,
+    BUNKER_LEAVE_TITLE,
     BUNKER_MODE_BASE_TITLE,
     BUNKER_MODE_STORY_TITLE,
     BUNKER_NEXT_TITLE,
@@ -24,6 +25,7 @@ from constants import (
     CB_ADMIN_STATS,
     CB_BK_CANCEL,
     CB_BK_JOIN,
+    CB_BK_LEAVE,
     CB_BK_MODE,
     CB_BK_NEXT,
     CB_BK_OPEN,
@@ -313,7 +315,12 @@ def create_bunker_lobby_keyboard(story_mode: bool) -> InlineKeyboardMarkup:
     mode_title = BUNKER_MODE_STORY_TITLE if story_mode else BUNKER_MODE_BASE_TITLE
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=BUNKER_JOIN_TITLE, callback_data=CB_BK_JOIN)],
+            [
+                InlineKeyboardButton(text=BUNKER_JOIN_TITLE, callback_data=CB_BK_JOIN),
+                InlineKeyboardButton(
+                    text=BUNKER_LEAVE_TITLE, callback_data=CB_BK_LEAVE
+                ),
+            ],
             [InlineKeyboardButton(text=mode_title, callback_data=CB_BK_MODE)],
             [
                 InlineKeyboardButton(

@@ -27,3 +27,11 @@ jobs:
 
       - name: Tests
         run: pytest --cov=. --cov-report=term-missing
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker build
+        run: docker build .

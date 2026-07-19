@@ -72,7 +72,7 @@ from handlers.dangerous_group import (  # noqa: E402
     restore_dangerous_sessions,
 )
 from handlers.dangerous_group import (
-    _persist_sessions as _dg_persist,
+    _persist_chat_session as _dg_persist,
 )
 from handlers.dangerous_group import (
     _render_board as _render_dg_board,
@@ -85,7 +85,7 @@ from handlers.group_session import (  # noqa: E402
     _parse_count,
     _parse_seconds,
     _parse_team,
-    _persist_sessions,
+    _persist_chat_session,
     _render_lobby,
     _render_play,
     _render_scores,
@@ -124,9 +124,7 @@ def test_config_resolves_database_path() -> None:
     project = Path("/proj")
     assert _resolve_database_path(None, project) == project / "bot.sqlite3"
     assert _resolve_database_path("  ", project) == project / "bot.sqlite3"
-    assert _resolve_database_path("/db/bot.sqlite3", project) == Path(
-        "/db/bot.sqlite3"
-    )
+    assert _resolve_database_path("/db/bot.sqlite3", project) == Path("/db/bot.sqlite3")
 
 
 def test_content_loads_and_validates() -> None:
@@ -275,32 +273,20 @@ async def _exercise_storage() -> None:
     )
     dispatcher.include_router(create_inline_router(content))
     dispatcher.include_router(create_word_games_router(games, storage))
+    dispatcher.include_router(create_group_session_router(games, storage, {}))
     dispatcher.include_router(
-        create_group_session_router(games, storage, {})
+        create_bunker_router(load_bunker_content(DATA_DIR), storage, {}, {}, {})
     )
-    dispatcher.include_router(
-        create_bunker_router(
-            load_bunker_content(DATA_DIR), storage, {}, {}, {}
-        )
-    )
-    dispatcher.include_router(
-        create_dangerous_group_router(content, storage, {})
-    )
+    dispatcher.include_router(create_dangerous_group_router(content, storage, {}))
 
     private_menu = keyboards.create_private_menu_keyboard(games)
     private_labels = [
-        button.text
-        for row in private_menu.inline_keyboard
-        for button in row
+        button.text for row in private_menu.inline_keyboard for button in row
     ]
     assert private_labels == ["Кто я?", "Настройки"]
 
     group_menu = keyboards.create_group_menu_keyboard(games)
-    group_labels = [
-        button.text
-        for row in group_menu.inline_keyboard
-        for button in row
-    ]
+    group_labels = [button.text for row in group_menu.inline_keyboard for button in row]
     assert group_labels == [
         "Крокодил",
         "Алиас",
@@ -330,7 +316,7 @@ async def _exercise_storage() -> None:
     persisted.team_of = {5: 1}
     persisted.scores = [0, 3]
     persisted.issued = {"альфа"}
-    await _persist_sessions(storage, {-100: persisted})
+    await _persist_chat_session(storage, {-100: persisted}, -100)
     restored: dict[int, GroupSession] = {}
     await restore_group_sessions(storage, games, restored)
     assert set(restored) == {-100}
@@ -351,7 +337,7 @@ async def _exercise_storage() -> None:
     dgs.sent = [False, True]
     dgs.boss_revealed = True
     dgs.issued_curses = {"c1"}
-    await _dg_persist(storage, {-200: dgs})
+    await _dg_persist(storage, {-200: dgs}, -200)
     dg_restored: dict[int, DangerousGroup] = {}
     await restore_dangerous_sessions(storage, dg_restored)
     assert set(dg_restored) == {-200}
@@ -367,9 +353,7 @@ async def _exercise_storage() -> None:
     bunker.catastrophe = "потоп"
     bunker.pairs = pick_pairs(bunker_content, ROUNDS_TOTAL)
     bunker.plan = rounds_plan(4)
-    bunker.hands = dict(
-        zip(bunker.players, deal_hands(bunker_content, 4), strict=True)
-    )
+    bunker.hands = dict(zip(bunker.players, deal_hands(bunker_content, 4), strict=True))
     bunker.revealed_count = {pid: 0 for pid in bunker.players}
     _begin_round(bunker, 1)
     bunker.excluded = {2}
@@ -419,13 +403,16 @@ async def _exercise_backup_restore() -> None:
     storage_b = SQLiteHistoryStorage(path_b)
     await storage_b.initialize()
     await storage_b.save_user_word(2, "из_b")
+    # живая WAL-база не копируется файлом - источник только снимок VACUUM INTO
+    snapshot = base / "b_snapshot.sqlite3"
+    await storage_b.backup_snapshot(snapshot)
 
-    assert _is_sqlite_file(path_b) is True
+    assert _is_sqlite_file(snapshot) is True
     not_sqlite = base / "x.bin"
     not_sqlite.write_bytes(b"not a database")
     assert _is_sqlite_file(not_sqlite) is False
 
-    await storage_a.replace_database(path_b)
+    await storage_a.replace_database(snapshot)
     assert await storage_a.count_user_words(2) == 1
     assert await storage_a.count_user_words(1) == 0
 
@@ -522,7 +509,7 @@ async def _exercise_turn_timer() -> None:
     session.scores = [0, 0]
     bot = _RecordingBot()
 
-    async def _noop() -> None:
+    async def _noop(chat_id: int) -> None:
         return None
 
     await _run_timer(
@@ -551,16 +538,12 @@ async def _exercise_chat_lock() -> None:
     middleware = make_chat_lock_middleware(locks)
     order: list[str] = []
 
-    async def slow_handler(
-        event: TelegramObject, data: dict[str, Any]
-    ) -> None:
+    async def slow_handler(event: TelegramObject, data: dict[str, Any]) -> None:
         order.append("a-start")
         await asyncio.sleep(0.02)
         order.append("a-end")
 
-    async def fast_handler(
-        event: TelegramObject, data: dict[str, Any]
-    ) -> None:
+    async def fast_handler(event: TelegramObject, data: dict[str, Any]) -> None:
         order.append("b-start")
         order.append("b-end")
 
@@ -692,9 +675,7 @@ def test_bunker_solo_lobby_helpers() -> None:
     assert _lookup_lobby(99, lobbies, member_lobby) is None
     assert code in _render_solo_lobby(lobby) and "Аня" in _render_solo_lobby(lobby)
 
-    intro = _render_solo_intro(
-        "катастрофа", pick_pairs(content, 5), rounds_plan(4), 4
-    )
+    intro = _render_solo_intro("катастрофа", pick_pairs(content, 5), rounds_plan(4), 4)
     assert "катастрофа" in intro and "Мест в бункере" in intro
 
     _drop_lobby(lobby, lobbies, member_lobby)

@@ -88,22 +88,33 @@ def split_report(report: str) -> list[str]:
     current_lines: list[str] = []
     current_length = 0
 
-    for line in report.splitlines():
-        line_length = len(line) + 1
-        if (
-            current_length + line_length > TELEGRAM_MESSAGE_LIMIT
-            and len(current_lines) > 0
-        ):
-            chunks.append("\n".join(current_lines))
-            current_lines = []
-            current_length = 0
-        current_lines.append(line)
-        current_length += line_length
+    for raw_line in report.splitlines():
+        for line in _hard_wrap(raw_line):
+            line_length = len(line) + 1
+            if (
+                current_length + line_length > TELEGRAM_MESSAGE_LIMIT
+                and len(current_lines) > 0
+            ):
+                chunks.append("\n".join(current_lines))
+                current_lines = []
+                current_length = 0
+            current_lines.append(line)
+            current_length += line_length
 
     if len(current_lines) > 0:
         chunks.append("\n".join(current_lines))
 
     return chunks
+
+
+def _hard_wrap(line: str) -> list[str]:
+    """режет строку длиннее лимита сообщения telegram на части по лимиту"""
+    if len(line) <= TELEGRAM_MESSAGE_LIMIT:
+        return [line]
+    return [
+        line[start : start + TELEGRAM_MESSAGE_LIMIT]
+        for start in range(0, len(line), TELEGRAM_MESSAGE_LIMIT)
+    ]
 
 
 def make_persist_middleware(
@@ -119,6 +130,26 @@ def make_persist_middleware(
             await persist()
         except DatabaseError:
             logger.exception("session_persist_failed", extra={"scope": scope})
+        return result
+
+    return middleware
+
+
+def make_chat_persist_middleware(
+    persist_chat: Callable[[int], Awaitable[None]], scope: str
+) -> _Middleware:
+    """строит middleware: сохраняет снапшот сессии чата события после обработки"""
+
+    async def middleware(
+        handler: _Handler, event: TelegramObject, data: dict[str, Any]
+    ) -> Any:
+        result = await handler(event, data)
+        chat_id = _event_chat_id(event)
+        if chat_id is not None:
+            try:
+                await persist_chat(chat_id)
+            except DatabaseError:
+                logger.exception("session_persist_failed", extra={"scope": scope})
         return result
 
     return middleware

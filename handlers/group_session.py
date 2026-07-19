@@ -34,7 +34,7 @@ from handlers.common import (
     data_startswith,
     lookup_chat_session,
     make_chat_lock_middleware,
-    make_persist_middleware,
+    make_chat_persist_middleware,
     pick_word,
 )
 from handlers.ui import edit_menu
@@ -80,12 +80,12 @@ def create_group_session_router(
     games_by_id = {game.game_id: game for game in group_games}
     locks: dict[int, asyncio.Lock] = {}
 
-    async def _persist() -> None:
-        await _persist_sessions(storage, sessions)
+    async def _persist_chat(chat_id: int) -> None:
+        await _persist_chat_session(storage, sessions, chat_id)
 
     router.callback_query.middleware(make_chat_lock_middleware(locks))
     router.callback_query.middleware(
-        make_persist_middleware(_persist, _SCOPE)
+        make_chat_persist_middleware(_persist_chat, _SCOPE)
     )
 
     @router.message(Command("play"))
@@ -110,6 +110,15 @@ def create_group_session_router(
         if game is None:
             await callback.answer()
             return
+        existing = sessions.get(message.chat.id)
+        if existing is not None and existing.started:
+            await callback.answer(
+                "Партия уже идёт. Сначала «Завершить» или «Отмена».",
+                show_alert=True,
+            )
+            return
+        if existing is not None:
+            _cancel_timer(existing)
 
         sessions[message.chat.id] = GroupSession(
             game=game,
@@ -124,9 +133,7 @@ def create_group_session_router(
         await edit_menu(
             callback,
             _render_lobby(session),
-            create_session_lobby_keyboard(
-                session.team_count, session.turn_seconds
-            ),
+            create_session_lobby_keyboard(session.team_count, session.turn_seconds),
         )
 
     @router.callback_query(data_startswith(CB_GS_JOIN_PREFIX))
@@ -149,9 +156,7 @@ def create_group_session_router(
         await edit_menu(
             callback,
             _render_lobby(session),
-            create_session_lobby_keyboard(
-                session.team_count, session.turn_seconds
-            ),
+            create_session_lobby_keyboard(session.team_count, session.turn_seconds),
         )
 
     @router.callback_query(data_startswith(CB_GS_TEAMS_PREFIX))
@@ -162,21 +167,15 @@ def create_group_session_router(
             await callback.answer()
             return
         if callback.from_user.id != session.host_id:
-            await callback.answer(
-                "Число команд меняет создатель.", show_alert=True
-            )
+            await callback.answer("Число команд меняет создатель.", show_alert=True)
             return
-        count = _parse_count(
-            (callback.data or "")[len(CB_GS_TEAMS_PREFIX) :]
-        )
+        count = _parse_count((callback.data or "")[len(CB_GS_TEAMS_PREFIX) :])
         if count is None:
             await callback.answer()
             return
 
         orphans = [
-            user_id
-            for user_id, team in session.team_of.items()
-            if team >= count
+            user_id for user_id, team in session.team_of.items() if team >= count
         ]
         for user_id in orphans:
             session.team_of.pop(user_id, None)
@@ -185,9 +184,7 @@ def create_group_session_router(
         await edit_menu(
             callback,
             _render_lobby(session),
-            create_session_lobby_keyboard(
-                session.team_count, session.turn_seconds
-            ),
+            create_session_lobby_keyboard(session.team_count, session.turn_seconds),
         )
 
     @router.callback_query(data_startswith(CB_GS_TIMER_PREFIX))
@@ -198,13 +195,9 @@ def create_group_session_router(
             await callback.answer()
             return
         if callback.from_user.id != session.host_id:
-            await callback.answer(
-                "Время хода меняет создатель.", show_alert=True
-            )
+            await callback.answer("Время хода меняет создатель.", show_alert=True)
             return
-        seconds = _parse_seconds(
-            (callback.data or "")[len(CB_GS_TIMER_PREFIX) :]
-        )
+        seconds = _parse_seconds((callback.data or "")[len(CB_GS_TIMER_PREFIX) :])
         if seconds is None:
             await callback.answer()
             return
@@ -213,9 +206,7 @@ def create_group_session_router(
         await edit_menu(
             callback,
             _render_lobby(session),
-            create_session_lobby_keyboard(
-                session.team_count, session.turn_seconds
-            ),
+            create_session_lobby_keyboard(session.team_count, session.turn_seconds),
         )
 
     @router.callback_query(F.data == CB_GS_START)
@@ -228,15 +219,23 @@ def create_group_session_router(
         if callback.from_user.id != session.host_id:
             await callback.answer("Начать может создатель.", show_alert=True)
             return
-        if len(session.players) == 0:
-            await callback.answer("Нет игроков.", show_alert=True)
+        manned = set(session.team_of.values())
+        empty = [
+            team_label(index)
+            for index in range(session.team_count)
+            if index not in manned
+        ]
+        if empty:
+            await callback.answer(
+                "Без игроков: " + ", ".join(empty) + ". Наберите людей "
+                "или уменьшите число команд.",
+                show_alert=True,
+            )
             return
 
         session.started = True
         session.scores = [0] * session.team_count
-        await edit_menu(
-            callback, _render_play(session), create_session_play_keyboard()
-        )
+        await edit_menu(callback, _render_play(session), create_session_play_keyboard())
 
     @router.callback_query(F.data == CB_GS_CANCEL)
     async def handle_cancel(callback: CallbackQuery) -> None:
@@ -273,10 +272,8 @@ def create_group_session_router(
         session.explainer_id = user.id
         bot = callback.bot
         if bot is not None:
-            _start_timer(chat_id, session, bot, locks[chat_id], _persist)
-        await edit_menu(
-            callback, _render_play(session), create_session_play_keyboard()
-        )
+            _start_timer(chat_id, session, bot, locks[chat_id], _persist_chat)
+        await edit_menu(callback, _render_play(session), create_session_play_keyboard())
 
     @router.callback_query(F.data == CB_GS_SCORE)
     async def handle_score(callback: CallbackQuery) -> None:
@@ -295,9 +292,7 @@ def create_group_session_router(
         session.scores[session.current_team] += 1
         # слово отыграно: следующее берут кнопкой «Слово в ЛС», не авто
         session.explainer_id = None
-        await edit_menu(
-            callback, _render_play(session), create_session_play_keyboard()
-        )
+        await edit_menu(callback, _render_play(session), create_session_play_keyboard())
 
     @router.callback_query(F.data == CB_GS_SKIP)
     async def handle_skip(callback: CallbackQuery) -> None:
@@ -320,9 +315,7 @@ def create_group_session_router(
         )
         if not delivered:
             return
-        await edit_menu(
-            callback, _render_play(session), create_session_play_keyboard()
-        )
+        await edit_menu(callback, _render_play(session), create_session_play_keyboard())
 
     @router.callback_query(F.data == CB_GS_REROLL)
     async def handle_reroll(callback: CallbackQuery) -> None:
@@ -346,9 +339,7 @@ def create_group_session_router(
         if not delivered:
             return
         session.scores[session.current_team] -= 1
-        await edit_menu(
-            callback, _render_play(session), create_session_play_keyboard()
-        )
+        await edit_menu(callback, _render_play(session), create_session_play_keyboard())
 
     @router.callback_query(F.data == CB_GS_NEXT)
     async def handle_next(callback: CallbackQuery) -> None:
@@ -362,13 +353,9 @@ def create_group_session_router(
             return
 
         _cancel_timer(session)
-        session.current_team = (
-            session.current_team + 1
-        ) % session.team_count
+        session.current_team = (session.current_team + 1) % session.team_count
         session.explainer_id = None
-        await edit_menu(
-            callback, _render_play(session), create_session_play_keyboard()
-        )
+        await edit_menu(callback, _render_play(session), create_session_play_keyboard())
 
     @router.callback_query(F.data == CB_GS_FINISH)
     async def handle_finish(callback: CallbackQuery) -> None:
@@ -428,15 +415,17 @@ def _load_session(
     )
 
 
-async def _persist_sessions(
-    storage: SQLiteHistoryStorage, sessions: dict[int, GroupSession]
+async def _persist_chat_session(
+    storage: SQLiteHistoryStorage,
+    sessions: dict[int, GroupSession],
+    chat_id: int,
 ) -> None:
-    """сохраняет снапшот всех групповых сессий в хранилище"""
-    items = {
-        str(chat_id): json.dumps(_dump_session(session))
-        for chat_id, session in sessions.items()
-    }
-    await storage.replace_session_scope(_SCOPE, items)
+    """сохраняет или удаляет снапшот сессии одного чата"""
+    session = sessions.get(chat_id)
+    if session is None:
+        await storage.delete_session(_SCOPE, str(chat_id))
+        return
+    await storage.save_session(_SCOPE, str(chat_id), json.dumps(_dump_session(session)))
 
 
 async def restore_group_sessions(
@@ -448,7 +437,15 @@ async def restore_group_sessions(
     games_by_id = {game.game_id: game for game in word_games}
     raw = await storage.load_session_scope(_SCOPE)
     for key, data in raw.items():
-        session = _load_session(json.loads(data), games_by_id)
+        try:
+            session = _load_session(json.loads(data), games_by_id)
+        except (KeyError, ValueError, TypeError, json.JSONDecodeError):
+            # снапшот несовместимой/повреждённой схемы - пропускаем
+            logger.exception(
+                "session_restore_failed",
+                extra={"scope": _SCOPE, "key": key},
+            )
+            continue
         if session is not None:
             sessions[int(key)] = session
 
@@ -472,11 +469,13 @@ async def _deliver_word(
 
     bot = callback.bot
     if bot is None:
+        session.issued.discard(word)
         await callback.answer()
         return False
     try:
         await bot.send_message(explainer_id, f"Слово: {word}")
     except TelegramForbiddenError:
+        session.issued.discard(word)
         await callback.answer(
             "Объясняющий не открыл ЛС с ботом (нужен /start в личке).",
             show_alert=True,
@@ -534,7 +533,7 @@ def _start_timer(
     session: GroupSession,
     bot: Bot,
     lock: asyncio.Lock,
-    persist: Callable[[], Awaitable[None]],
+    persist: Callable[[int], Awaitable[None]],
 ) -> None:
     """запускает таймер хода, если он включён и ещё не идёт"""
     if session.turn_seconds <= 0 or session.timer_task is not None:
@@ -557,7 +556,7 @@ async def _run_timer(
     session: GroupSession,
     bot: Bot,
     lock: asyncio.Lock,
-    persist: Callable[[], Awaitable[None]],
+    persist: Callable[[int], Awaitable[None]],
     epoch: int,
 ) -> None:
     """ждёт время хода и передаёт ход следующей команде по истечении"""
@@ -571,16 +570,12 @@ async def _run_timer(
             return
         session.turn_epoch += 1
         session.timer_task = None
-        session.current_team = (
-            session.current_team + 1
-        ) % session.team_count
+        session.current_team = (session.current_team + 1) % session.team_count
         session.explainer_id = None
         try:
-            await persist()
+            await persist(chat_id)
         except DatabaseError:
-            logger.exception(
-                "session_persist_failed", extra={"scope": _SCOPE}
-            )
+            logger.exception("session_persist_failed", extra={"scope": _SCOPE})
         try:
             await bot.send_message(
                 chat_id,
@@ -609,9 +604,7 @@ def _render_lobby(session: GroupSession) -> str:
             for user_id, player in session.players.items()
             if session.team_of.get(user_id) == index
         ]
-        lines.append(
-            f"{team_label(index)}: {', '.join(members) if members else '-'}"
-        )
+        lines.append(f"{team_label(index)}: {', '.join(members) if members else '-'}")
     return "\n".join(lines)
 
 
@@ -634,9 +627,7 @@ def _render_scores(session: GroupSession) -> str:
         lines.append(f"{team_label(index)}: {session.scores[index]}")
     best = max(session.scores)
     winners = [
-        team_label(index)
-        for index, score in enumerate(session.scores)
-        if score == best
+        team_label(index) for index, score in enumerate(session.scores) if score == best
     ]
     if len(winners) == 1:
         lines.append(f"\nПобедитель: {winners[0]}")

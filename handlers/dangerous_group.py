@@ -29,7 +29,7 @@ from handlers.common import (
     data_startswith,
     lookup_chat_session,
     make_chat_lock_middleware,
-    make_persist_middleware,
+    make_chat_persist_middleware,
     pick_unique,
     pick_word,
 )
@@ -55,12 +55,8 @@ class DangerousGroup:
 
     host_id: int
     words: list[str | None] = field(default_factory=lambda: [None, None])
-    explainer_ids: list[int | None] = field(
-        default_factory=lambda: [None, None]
-    )
-    explainer_names: list[str | None] = field(
-        default_factory=lambda: [None, None]
-    )
+    explainer_ids: list[int | None] = field(default_factory=lambda: [None, None])
+    explainer_names: list[str | None] = field(default_factory=lambda: [None, None])
     sent: list[bool] = field(default_factory=lambda: [False, False])
     boss_revealed: bool = False
     boss_pending: bool = False
@@ -78,12 +74,12 @@ def create_dangerous_group_router(
     router = Router()
     locks: dict[int, asyncio.Lock] = {}
 
-    async def _persist() -> None:
-        await _persist_sessions(storage, sessions)
+    async def _persist_chat(chat_id: int) -> None:
+        await _persist_chat_session(storage, sessions, chat_id)
 
     router.callback_query.middleware(make_chat_lock_middleware(locks))
     router.callback_query.middleware(
-        make_persist_middleware(_persist, _SCOPE)
+        make_chat_persist_middleware(_persist_chat, _SCOPE)
     )
 
     @router.callback_query(F.data == CB_DG_OPEN)
@@ -97,6 +93,15 @@ def create_dangerous_group_router(
             await callback.answer(
                 "Командные «Опасные слова» - в беседе.", show_alert=True
             )
+            return
+        existing = sessions.get(message.chat.id)
+        if existing is not None:
+            # партия уже идёт: показываем её поле, сброс - через «Завершить»
+            await message.answer(
+                _render_board(existing),
+                reply_markup=create_dangerous_group_keyboard(),
+            )
+            await callback.answer()
             return
         session = DangerousGroup(host_id=callback.from_user.id)
         sessions[message.chat.id] = session
@@ -114,6 +119,9 @@ def create_dangerous_group_router(
         if session is None or team is None:
             await callback.answer()
             return
+        if session.explainer_ids[team] != callback.from_user.id:
+            # у нового объясняющего слова нет - доставку нужно повторить
+            session.sent[team] = False
         session.explainer_ids[team] = callback.from_user.id
         session.explainer_names[team] = callback.from_user.full_name
         await _edit_board(callback, session)
@@ -126,6 +134,12 @@ def create_dangerous_group_router(
         team = _parse_team(callback.data, CB_DG_WORD_PREFIX)
         if session is None or team is None:
             await callback.answer()
+            return
+        if callback.from_user.id == session.explainer_ids[team]:
+            await callback.answer(
+                f"Объясняющий {team_label(team)} не тянет слово своей команды.",
+                show_alert=True,
+            )
             return
         bot = callback.bot
         if bot is None:
@@ -144,8 +158,6 @@ def create_dangerous_group_router(
             return
 
         word = pick_word(pool, session.issued_words)
-        session.words[team] = word
-        session.sent[team] = False
         try:
             await bot.send_message(
                 callback.from_user.id,
@@ -153,10 +165,14 @@ def create_dangerous_group_router(
                 "Напишите запретные слова, затем «отправить».",
             )
         except TelegramForbiddenError:
+            # слово не показано - возвращаем его в пул
+            session.issued_words.discard(word)
             await callback.answer(
                 "Не дошло: нужен /start в личке с ботом.", show_alert=True
             )
             return
+        session.words[team] = word
+        session.sent[team] = False
         await _edit_board(callback, session)
         await callback.answer("Слово в ЛС: напишите запретные.")
 
@@ -186,9 +202,7 @@ def create_dangerous_group_router(
             await callback.answer()
             return
         try:
-            await bot.send_message(
-                explainer_id, f"Слово для объяснения: {word}"
-            )
+            await bot.send_message(explainer_id, f"Слово для объяснения: {word}")
         except TelegramForbiddenError:
             await callback.answer(
                 "Объясняющему не дошло: нужен /start в личке с ботом.",
@@ -207,9 +221,7 @@ def create_dangerous_group_router(
             await callback.answer()
             return
         if callback.from_user.id != session.host_id:
-            await callback.answer(
-                "Новый раунд запускает ведущий.", show_alert=True
-            )
+            await callback.answer("Новый раунд запускает ведущий.", show_alert=True)
             return
         session.words = [None, None]
         session.explainer_ids = [None, None]
@@ -244,9 +256,7 @@ def create_dangerous_group_router(
             return
         await message.answer(
             _curse_text(curse),
-            reply_markup=create_dg_offer_keyboard(
-                CB_DG_CURSE_KEEP, CB_DG_CURSE_REROLL
-            ),
+            reply_markup=create_dg_offer_keyboard(CB_DG_CURSE_KEEP, CB_DG_CURSE_REROLL),
         )
         await callback.answer()
 
@@ -335,9 +345,7 @@ def create_dangerous_group_router(
         session.boss_pending = True
         await message.answer(
             _boss_text(boss),
-            reply_markup=create_dg_offer_keyboard(
-                CB_DG_BOSS_KEEP, CB_DG_BOSS_REROLL
-            ),
+            reply_markup=create_dg_offer_keyboard(CB_DG_BOSS_KEEP, CB_DG_BOSS_REROLL),
         )
         await callback.answer()
 
@@ -448,15 +456,17 @@ def _load_session(data: dict[str, Any]) -> DangerousGroup:
     )
 
 
-async def _persist_sessions(
-    storage: SQLiteHistoryStorage, sessions: dict[int, DangerousGroup]
+async def _persist_chat_session(
+    storage: SQLiteHistoryStorage,
+    sessions: dict[int, DangerousGroup],
+    chat_id: int,
 ) -> None:
-    """сохраняет снапшот всех партий «опасные слова»"""
-    items = {
-        str(chat_id): json.dumps(_dump_session(session))
-        for chat_id, session in sessions.items()
-    }
-    await storage.replace_session_scope(_SCOPE, items)
+    """сохраняет или удаляет снапшот партии одного чата"""
+    session = sessions.get(chat_id)
+    if session is None:
+        await storage.delete_session(_SCOPE, str(chat_id))
+        return
+    await storage.save_session(_SCOPE, str(chat_id), json.dumps(_dump_session(session)))
 
 
 async def restore_dangerous_sessions(
@@ -475,9 +485,7 @@ async def restore_dangerous_sessions(
             )
 
 
-async def _edit_board(
-    callback: CallbackQuery, session: DangerousGroup
-) -> None:
+async def _edit_board(callback: CallbackQuery, session: DangerousGroup) -> None:
     """перерисовывает поле партии на месте"""
     message = callback.message
     if isinstance(message, Message):
@@ -494,7 +502,7 @@ def _parse_team(data: str | None, prefix: str) -> int | None:
     """извлекает индекс команды (0 или 1) из callback-данных"""
     if data is None:
         return None
-    suffix = data[len(prefix):]
+    suffix = data[len(prefix) :]
     if suffix == "0":
         return 0
     if suffix == "1":
