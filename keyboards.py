@@ -103,9 +103,7 @@ def create_private_menu_keyboard(
         for game in word_games
         if game.game_id == "whoami"
     ]
-    rows.append(
-        [InlineKeyboardButton(text=SETTINGS_TITLE, callback_data=CB_SETTINGS)]
-    )
+    rows.append([InlineKeyboardButton(text=SETTINGS_TITLE, callback_data=CB_SETTINGS)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -137,66 +135,52 @@ def create_group_menu_keyboard(
 
 
 def create_dangerous_group_keyboard() -> InlineKeyboardMarkup:
-    """создаёт клавиатуру партии «опасные слова»: дорожка на каждую команду"""
-    rows: list[list[InlineKeyboardButton]] = []
-    for team in range(2):
-        suffix = str(team)
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=f"К{team + 1}: тянуть",
-                    callback_data=CB_DG_WORD_PREFIX + suffix,
-                ),
-                InlineKeyboardButton(
-                    text=f"К{team + 1}: объясняю",
-                    callback_data=CB_DG_EXPLAIN_PREFIX + suffix,
-                ),
-                InlineKeyboardButton(
-                    text=f"К{team + 1}: отправить",
-                    callback_data=CB_DG_SEND_PREFIX + suffix,
-                ),
-            ]
-        )
-    rows.append(
+    """создаёт клавиатуру партии «опасные слова»: ряд на каждое действие"""
+    rows: list[list[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton(
-                text=DG_NEW_ROUND_TITLE, callback_data=CB_DG_NEXT
+                text=f"Я объясняющий {team + 1}",
+                callback_data=CB_DG_EXPLAIN_PREFIX + str(team),
             )
-        ]
+            for team in range(2)
+        ],
+        [
+            InlineKeyboardButton(
+                text=f"Тянуть слово {team + 1}",
+                callback_data=CB_DG_WORD_PREFIX + str(team),
+            )
+            for team in range(2)
+        ],
+        [
+            InlineKeyboardButton(
+                text=f"Отправить {team + 1}",
+                callback_data=CB_DG_SEND_PREFIX + str(team),
+            )
+            for team in range(2)
+        ],
+    ]
+    rows.append(
+        [InlineKeyboardButton(text=DG_NEW_ROUND_TITLE, callback_data=CB_DG_NEXT)]
     )
     rows.append(
         [
-            InlineKeyboardButton(
-                text=DG_CURSE_TITLE, callback_data=CB_DG_CURSE
-            ),
-            InlineKeyboardButton(
-                text=DG_BOSS_TITLE, callback_data=CB_DG_BOSS
-            ),
+            InlineKeyboardButton(text=DG_CURSE_TITLE, callback_data=CB_DG_CURSE),
+            InlineKeyboardButton(text=DG_BOSS_TITLE, callback_data=CB_DG_BOSS),
         ]
     )
     rows.append(
-        [
-            InlineKeyboardButton(
-                text=DG_FINISH_TITLE, callback_data=CB_DG_FINISH
-            )
-        ]
+        [InlineKeyboardButton(text=DG_FINISH_TITLE, callback_data=CB_DG_FINISH)]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def create_dg_offer_keyboard(
-    keep_data: str, reroll_data: str
-) -> InlineKeyboardMarkup:
+def create_dg_offer_keyboard(keep_data: str, reroll_data: str) -> InlineKeyboardMarkup:
     """создаёт клавиатуру «принять/реролл» для проклятия или босса"""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(
-                    text=DG_KEEP_TITLE, callback_data=keep_data
-                ),
-                InlineKeyboardButton(
-                    text=DG_REROLL_TITLE, callback_data=reroll_data
-                ),
+                InlineKeyboardButton(text=DG_KEEP_TITLE, callback_data=keep_data),
+                InlineKeyboardButton(text=DG_REROLL_TITLE, callback_data=reroll_data),
             ]
         ]
     )
@@ -256,11 +240,7 @@ def create_admin_keyboard() -> InlineKeyboardMarkup:
                     text=ADMIN_STATS_TITLE, callback_data=CB_ADMIN_STATS
                 )
             ],
-            [
-                InlineKeyboardButton(
-                    text=ADMIN_CSV_TITLE, callback_data=CB_ADMIN_CSV
-                )
-            ],
+            [InlineKeyboardButton(text=ADMIN_CSV_TITLE, callback_data=CB_ADMIN_CSV)],
             [
                 InlineKeyboardButton(
                     text=ADMIN_ACTIVITY_TITLE, callback_data=CB_ADMIN_ACTIVITY
@@ -321,12 +301,8 @@ def create_session_lobby_keyboard(
     )
     rows.append(
         [
-            InlineKeyboardButton(
-                text=SESSION_START_TITLE, callback_data=CB_GS_START
-            ),
-            InlineKeyboardButton(
-                text=SESSION_CANCEL_TITLE, callback_data=CB_GS_CANCEL
-            ),
+            InlineKeyboardButton(text=SESSION_START_TITLE, callback_data=CB_GS_START),
+            InlineKeyboardButton(text=SESSION_CANCEL_TITLE, callback_data=CB_GS_CANCEL),
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -337,11 +313,7 @@ def create_bunker_lobby_keyboard(story_mode: bool) -> InlineKeyboardMarkup:
     mode_title = BUNKER_MODE_STORY_TITLE if story_mode else BUNKER_MODE_BASE_TITLE
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=BUNKER_JOIN_TITLE, callback_data=CB_BK_JOIN
-                )
-            ],
+            [InlineKeyboardButton(text=BUNKER_JOIN_TITLE, callback_data=CB_BK_JOIN)],
             [InlineKeyboardButton(text=mode_title, callback_data=CB_BK_MODE)],
             [
                 InlineKeyboardButton(
@@ -388,9 +360,7 @@ def create_bunker_reveal_keyboard(votes_pending: bool) -> InlineKeyboardMarkup:
             text=BUNKER_VOTE_START_TITLE, callback_data=CB_BK_VOTE_START
         )
         if votes_pending
-        else InlineKeyboardButton(
-            text=BUNKER_NEXT_TITLE, callback_data=CB_BK_NEXT
-        )
+        else InlineKeyboardButton(text=BUNKER_NEXT_TITLE, callback_data=CB_BK_NEXT)
     )
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -445,11 +415,7 @@ def create_bunker_vote_keyboard(
         ]
     )
     rows.append(
-        [
-            InlineKeyboardButton(
-                text=BUNKER_CANCEL_TITLE, callback_data=CB_BK_CANCEL
-            )
-        ]
+        [InlineKeyboardButton(text=BUNKER_CANCEL_TITLE, callback_data=CB_BK_CANCEL)]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -458,29 +424,19 @@ def create_session_play_keyboard() -> InlineKeyboardMarkup:
     """создаёт клавиатуру управления групповой сессией"""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=SESSION_WORD_TITLE, callback_data=CB_GS_WORD
-                )
-            ],
+            [InlineKeyboardButton(text=SESSION_WORD_TITLE, callback_data=CB_GS_WORD)],
             [
                 InlineKeyboardButton(
                     text=SESSION_SCORE_TITLE, callback_data=CB_GS_SCORE
                 ),
-                InlineKeyboardButton(
-                    text=SESSION_SKIP_TITLE, callback_data=CB_GS_SKIP
-                ),
+                InlineKeyboardButton(text=SESSION_SKIP_TITLE, callback_data=CB_GS_SKIP),
             ],
             [
                 InlineKeyboardButton(
                     text=SESSION_REROLL_TITLE, callback_data=CB_GS_REROLL
                 )
             ],
-            [
-                InlineKeyboardButton(
-                    text=SESSION_NEXT_TITLE, callback_data=CB_GS_NEXT
-                )
-            ],
+            [InlineKeyboardButton(text=SESSION_NEXT_TITLE, callback_data=CB_GS_NEXT)],
             [
                 InlineKeyboardButton(
                     text=SESSION_FINISH_TITLE, callback_data=CB_GS_FINISH
