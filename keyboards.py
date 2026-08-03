@@ -47,8 +47,12 @@ from constants import (
     CB_DG_OPEN,
     CB_DG_SEND_PREFIX,
     CB_DG_WORD_PREFIX,
+    CB_FORGET_ME_NO,
+    CB_FORGET_ME_YES,
     CB_GS_CANCEL,
     CB_GS_FINISH,
+    CB_GS_FINISH_NO,
+    CB_GS_FINISH_YES,
     CB_GS_JOIN_PREFIX,
     CB_GS_NEW_PREFIX,
     CB_GS_NEXT,
@@ -68,14 +72,20 @@ from constants import (
     DANGEROUS_WORDS_GAME_TITLE,
     DG_BOSS_TITLE,
     DG_CURSE_TITLE,
+    DG_DROP_TITLE,
     DG_FINISH_TITLE,
     DG_KEEP_TITLE,
     DG_NEW_ROUND_TITLE,
     DG_REROLL_TITLE,
+    FORGET_ME_NO_TITLE,
+    FORGET_ME_YES_TITLE,
     MAX_TEAMS,
     MIN_TEAMS,
+    OPEN_PRIVATE_CHAT_TITLE,
     SESSION_CANCEL_TITLE,
+    SESSION_FINISH_NO_TITLE,
     SESSION_FINISH_TITLE,
+    SESSION_FINISH_YES_TITLE,
     SESSION_NEXT_TITLE,
     SESSION_REROLL_TITLE,
     SESSION_SCORE_TITLE,
@@ -88,13 +98,13 @@ from constants import (
     WORD_GAME_RESET_TITLE,
     team_label,
 )
-from services.random_generator import WordGame
+from services.content import WordGame, group_games, private_games
 
 
 def create_private_menu_keyboard(
     word_games: list[WordGame],
 ) -> InlineKeyboardMarkup:
-    """создаёт меню личного чата: «Кто я» и настройки"""
+    """создаёт меню личного чата: личные словесные игры и настройки"""
     rows = [
         [
             InlineKeyboardButton(
@@ -102,8 +112,7 @@ def create_private_menu_keyboard(
                 callback_data=CB_WG_OPEN_PREFIX + game.game_id,
             )
         ]
-        for game in word_games
-        if game.game_id == "whoami"
+        for game in private_games(word_games)
     ]
     rows.append([InlineKeyboardButton(text=SETTINGS_TITLE, callback_data=CB_SETTINGS)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -120,8 +129,7 @@ def create_group_menu_keyboard(
                 callback_data=CB_GS_NEW_PREFIX + game.game_id,
             )
         ]
-        for game in word_games
-        if game.game_id != "whoami"
+        for game in group_games(word_games)
     ]
     rows.append(
         [
@@ -176,13 +184,20 @@ def create_dangerous_group_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def create_dg_offer_keyboard(keep_data: str, reroll_data: str) -> InlineKeyboardMarkup:
-    """создаёт клавиатуру «принять/реролл» для проклятия или босса"""
+def create_dg_offer_keyboard(
+    keep_data: str, reroll_data: str, drop_data: str
+) -> InlineKeyboardMarkup:
+    """создаёт клавиатуру «принять/реролл/убрать» для проклятия или босса
+
+    «Убрать» обязателен: без него отложенное предложение босса навсегда
+    блокировало бы кнопку «Босс» до конца партии
+    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(text=DG_KEEP_TITLE, callback_data=keep_data),
                 InlineKeyboardButton(text=DG_REROLL_TITLE, callback_data=reroll_data),
+                InlineKeyboardButton(text=DG_DROP_TITLE, callback_data=drop_data),
             ]
         ]
     )
@@ -204,6 +219,22 @@ def create_settings_keyboard(auto_cycle: bool) -> InlineKeyboardMarkup:
                     text=BACK_TO_MAIN_MENU_TITLE, callback_data=CB_MAIN_MENU
                 )
             ],
+        ]
+    )
+
+
+def create_forget_me_keyboard() -> InlineKeyboardMarkup:
+    """создаёт подтверждение удаления личных данных пользователя"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=FORGET_ME_YES_TITLE, callback_data=CB_FORGET_ME_YES
+                ),
+                InlineKeyboardButton(
+                    text=FORGET_ME_NO_TITLE, callback_data=CB_FORGET_ME_NO
+                ),
+            ]
         ]
     )
 
@@ -273,8 +304,26 @@ def create_play_games_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def open_private_chat_row(bot_username: str) -> list[list[InlineKeyboardButton]]:
+    """строит ряд с ссылкой на личку бота, если известно его имя
+
+    слова и карты приходят в личку, поэтому её надо открыть заранее: одна
+    ссылка избавляет игроков от поиска бота вручную
+    """
+    if bot_username == "":
+        return []
+    return [
+        [
+            InlineKeyboardButton(
+                text=OPEN_PRIVATE_CHAT_TITLE,
+                url=f"https://t.me/{bot_username}?start=lobby",
+            )
+        ]
+    ]
+
+
 def create_session_lobby_keyboard(
-    team_count: int, turn_seconds: int
+    team_count: int, turn_seconds: int, bot_username: str
 ) -> InlineKeyboardMarkup:
     """создаёт клавиатуру лобби: число команд, время хода и вступление"""
     count_row = [
@@ -301,6 +350,7 @@ def create_session_lobby_keyboard(
         ]
         for index in range(team_count)
     )
+    rows.extend(open_private_chat_row(bot_username))
     rows.append(
         [
             InlineKeyboardButton(text=SESSION_START_TITLE, callback_data=CB_GS_START),
@@ -310,28 +360,26 @@ def create_session_lobby_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def create_bunker_lobby_keyboard(story_mode: bool) -> InlineKeyboardMarkup:
+def create_bunker_lobby_keyboard(
+    story_mode: bool, bot_username: str
+) -> InlineKeyboardMarkup:
     """создаёт клавиатуру лобби игры бункер с переключателем режима"""
     mode_title = BUNKER_MODE_STORY_TITLE if story_mode else BUNKER_MODE_BASE_TITLE
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text=BUNKER_JOIN_TITLE, callback_data=CB_BK_JOIN),
-                InlineKeyboardButton(
-                    text=BUNKER_LEAVE_TITLE, callback_data=CB_BK_LEAVE
-                ),
-            ],
-            [InlineKeyboardButton(text=mode_title, callback_data=CB_BK_MODE)],
-            [
-                InlineKeyboardButton(
-                    text=BUNKER_START_TITLE, callback_data=CB_BK_START
-                ),
-                InlineKeyboardButton(
-                    text=BUNKER_CANCEL_TITLE, callback_data=CB_BK_CANCEL
-                ),
-            ],
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(text=BUNKER_JOIN_TITLE, callback_data=CB_BK_JOIN),
+            InlineKeyboardButton(text=BUNKER_LEAVE_TITLE, callback_data=CB_BK_LEAVE),
+        ],
+        [InlineKeyboardButton(text=mode_title, callback_data=CB_BK_MODE)],
+    ]
+    rows.extend(open_private_chat_row(bot_username))
+    rows.append(
+        [
+            InlineKeyboardButton(text=BUNKER_START_TITLE, callback_data=CB_BK_START),
+            InlineKeyboardButton(text=BUNKER_CANCEL_TITLE, callback_data=CB_BK_CANCEL),
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def create_bunker_story_keyboard() -> InlineKeyboardMarkup:
@@ -425,6 +473,23 @@ def create_bunker_vote_keyboard(
         [InlineKeyboardButton(text=BUNKER_CANCEL_TITLE, callback_data=CB_BK_CANCEL)]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def create_session_finish_keyboard() -> InlineKeyboardMarkup:
+    """создаёт подтверждение завершения партии: любой участник может нажать
+    «Завершить», поэтому спрашиваем ещё раз"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=SESSION_FINISH_YES_TITLE, callback_data=CB_GS_FINISH_YES
+                ),
+                InlineKeyboardButton(
+                    text=SESSION_FINISH_NO_TITLE, callback_data=CB_GS_FINISH_NO
+                ),
+            ]
+        ]
+    )
 
 
 def create_session_play_keyboard() -> InlineKeyboardMarkup:

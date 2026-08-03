@@ -1,12 +1,18 @@
 import logging
 
 from aiogram import F, Router
-from aiogram.types import CallbackQuery
+from aiogram.filters import Command
+from aiogram.types import CallbackQuery, Message
 
-from constants import CB_SETTINGS, CB_SETTINGS_TOGGLE_CYCLE
+from constants import (
+    CB_FORGET_ME_NO,
+    CB_FORGET_ME_YES,
+    CB_SETTINGS,
+    CB_SETTINGS_TOGGLE_CYCLE,
+)
 from database import DatabaseError, SQLiteHistoryStorage
 from handlers.ui import edit_menu
-from keyboards import create_settings_keyboard
+from keyboards import create_forget_me_keyboard, create_settings_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +22,16 @@ SETTINGS_TEXT = (
     "начинается заново; при «выкл» нужно нажать «Новая игра»."
 )
 
+FORGET_ME_TEXT = (
+    "Удалить все твои данные?\n\n"
+    "Будут стёрты: история выданных слов, проклятий и боссов, избранное, "
+    "настройки и последнее слово. Отменить это нельзя, история выдач "
+    "начнётся с нуля."
+)
+
 
 def create_settings_router(storage: SQLiteHistoryStorage) -> Router:
-    """создаёт роутер меню настроек пользователя"""
+    """создаёт роутер меню настроек и удаления личных данных"""
     router = Router()
 
     @router.callback_query(F.data == CB_SETTINGS)
@@ -38,12 +51,42 @@ def create_settings_router(storage: SQLiteHistoryStorage) -> Router:
                 "database_error",
                 extra={"telegram_id": telegram_id, "action": "toggle_cycle"},
             )
-            await callback.answer(
-                "Не удалось сохранить настройку.", show_alert=True
-            )
+            await callback.answer("Не удалось сохранить настройку.", show_alert=True)
             return
 
         await _show_settings(callback, storage)
+
+    @router.message(Command("forgetme"))
+    async def handle_forget_me_request(message: Message) -> None:
+        """спрашивает подтверждение перед удалением личных данных"""
+        await message.answer(FORGET_ME_TEXT, reply_markup=create_forget_me_keyboard())
+
+    @router.callback_query(F.data == CB_FORGET_ME_NO)
+    async def handle_forget_me_cancel(callback: CallbackQuery) -> None:
+        """отменяет удаление личных данных"""
+        message = callback.message
+        if isinstance(message, Message):
+            await message.edit_text("Отменено, данные на месте.")
+        await callback.answer()
+
+    @router.callback_query(F.data == CB_FORGET_ME_YES)
+    async def handle_forget_me(callback: CallbackQuery) -> None:
+        """удаляет всю историю, избранное и настройки пользователя"""
+        telegram_id = callback.from_user.id
+        try:
+            removed = await storage.delete_user_data(telegram_id)
+        except DatabaseError:
+            logger.exception(
+                "database_error",
+                extra={"telegram_id": telegram_id, "action": "forget_me"},
+            )
+            await callback.answer("Не удалось удалить данные.", show_alert=True)
+            return
+
+        message = callback.message
+        if isinstance(message, Message):
+            await message.edit_text(f"Готово, удалено записей: {removed}.")
+        await callback.answer()
 
     return router
 
@@ -62,9 +105,7 @@ async def _show_settings(
                 "action": "open_settings",
             },
         )
-        await callback.answer(
-            "Не удалось открыть настройки.", show_alert=True
-        )
+        await callback.answer("Не удалось открыть настройки.", show_alert=True)
         return
 
     await edit_menu(callback, SETTINGS_TEXT, create_settings_keyboard(auto_cycle))

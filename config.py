@@ -28,23 +28,17 @@ def load_config() -> BotConfig:
 
     bot_token = os.getenv("BOT_TOKEN")
     if bot_token is None or bot_token.strip() == "":
-        raise ConfigError(
-            "BOT_TOKEN не задан. Создай .env на основе .env.example."
-        )
+        raise ConfigError("BOT_TOKEN не задан. Создай .env на основе .env.example.")
 
     return BotConfig(
         bot_token=bot_token.strip(),
-        database_path=_resolve_database_path(
-            os.getenv("DATABASE_PATH"), project_dir
-        ),
+        database_path=_resolve_database_path(os.getenv("DATABASE_PATH"), project_dir),
         data_dir=project_dir / "data",
         admin_ids=_parse_admin_ids(os.getenv("ADMIN_IDS")),
     )
 
 
-def _resolve_database_path(
-    raw_database_path: str | None, project_dir: Path
-) -> Path:
+def _resolve_database_path(raw_database_path: str | None, project_dir: Path) -> Path:
     """определяет путь к файлу базы из окружения или по умолчанию"""
     if raw_database_path is None or raw_database_path.strip() == "":
         return project_dir / "bot.sqlite3"

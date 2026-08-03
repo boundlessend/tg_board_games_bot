@@ -1,10 +1,22 @@
 import asyncio
 import logging
-import random
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from typing import Any
 
-from aiogram.types import CallbackQuery, Message, TelegramObject
+from aiogram import Bot
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+)
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    Message,
+    TelegramObject,
+)
 
 from constants import TELEGRAM_MESSAGE_LIMIT
 from database import DatabaseError
@@ -13,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 _Handler = Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]]
 _Middleware = Callable[[_Handler, TelegramObject, dict[str, Any]], Awaitable[Any]]
+
+_SEND_ATTEMPTS = 3
+_RETRY_PAUSE_SECONDS = 1.0
 
 
 def data_startswith(prefix: str) -> Callable[[CallbackQuery], bool]:
@@ -52,34 +67,6 @@ def is_private_admin_callback(
     if message is None or message.chat.type != "private":
         return False
     return callback.from_user.id in admin_ids
-
-
-def pick_unique[T](
-    pool: list[T], issued: set[str], get_id: Callable[[T], str]
-) -> T | None:
-    """выбирает элемент без повтора в сессии, сбрасывая круг при исчерпании"""
-    if len(pool) == 0:
-        return None
-    available = [item for item in pool if get_id(item) not in issued]
-    if len(available) == 0:
-        issued.clear()
-        available = list(pool)
-    chosen = random.choice(available)
-    issued.add(get_id(chosen))
-    return chosen
-
-
-def pick_word(pool: list[str], issued: set[str]) -> str:
-    """выбирает слово без повтора в сессии (пул считается непустым)"""
-    chosen = pick_unique(pool, issued, _identity)
-    if chosen is None:
-        raise ValueError("пул слов пуст")
-    return chosen
-
-
-def _identity(value: str) -> str:
-    """возвращает строку как собственный идентификатор"""
-    return value
 
 
 def split_report(report: str) -> list[str]:
@@ -155,7 +142,46 @@ def make_chat_persist_middleware(
     return middleware
 
 
-def make_chat_lock_middleware(locks: dict[int, asyncio.Lock]) -> _Middleware:
+class ChatLocks:
+    """блокировки по чатам, освобождающие память после последнего ожидающего
+
+    словарь локов рос бы монотонно с числом чатов за всё время жизни бота,
+    поэтому запись живёт ровно пока есть желающие её захватить: счётчик
+    ожидающих ведётся явно, потому что asyncio.Lock его не отдаёт
+    """
+
+    def __init__(self) -> None:
+        """создаёт пустой реестр блокировок"""
+        self._entries: dict[int, tuple[asyncio.Lock, int]] = {}
+
+    @asynccontextmanager
+    async def hold(self, chat_id: int) -> AsyncIterator[None]:
+        """держит блокировку чата на время блока и убирает её за собой"""
+        lock, waiters = self._entries.get(chat_id, (asyncio.Lock(), 0))
+        self._entries[chat_id] = (lock, waiters + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            self._drop_waiter(chat_id)
+
+    def _drop_waiter(self, chat_id: int) -> None:
+        """снимает учёт ожидающего и убирает освободившуюся блокировку"""
+        entry = self._entries.get(chat_id)
+        if entry is None:
+            return
+        lock, waiters = entry
+        if waiters <= 1:
+            del self._entries[chat_id]
+            return
+        self._entries[chat_id] = (lock, waiters - 1)
+
+    def __len__(self) -> int:
+        """возвращает число удерживаемых блокировок"""
+        return len(self._entries)
+
+
+def make_chat_lock_middleware(locks: ChatLocks) -> _Middleware:
     """строит middleware: сериализует обработку событий одного чата блокировкой"""
 
     async def middleware(
@@ -164,14 +190,68 @@ def make_chat_lock_middleware(locks: dict[int, asyncio.Lock]) -> _Middleware:
         chat_id = _event_chat_id(event)
         if chat_id is None:
             return await handler(event, data)
-        lock = locks.get(chat_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            locks[chat_id] = lock
-        async with lock:
+        async with locks.hold(chat_id):
             return await handler(event, data)
 
     return middleware
+
+
+async def is_chat_manager(bot: Bot, chat_id: int, user_id: int, host_id: int) -> bool:
+    """проверяет право управлять партией: создатель либо админ чата
+
+    нужен, чтобы партия не оставалась навсегда заблокированной, если
+    создатель ушёл из чата
+    """
+    if user_id == host_id:
+        return True
+    try:
+        member = await bot.get_chat_member(chat_id, user_id)
+    except (TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError):
+        logger.warning("chat_member_lookup_failed", extra={"chat_id": chat_id})
+        return False
+    return member.status in ("administrator", "creator")
+
+
+async def send_with_retry(
+    bot: Bot,
+    chat_id: int,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> Message | None:
+    """шлёт сообщение, переживая флуд-контроль и сетевые сбои
+
+    возвращает None, если чат недоступен (бота выгнали, чат удалён): это
+    ожидаемое состояние, а не сбой. Прочие ошибки после исчерпания попыток
+    пробрасываются наверх, где их подхватывает общий обработчик ошибок
+    """
+    last_error: Exception | None = None
+    for attempt in range(_SEND_ATTEMPTS):
+        try:
+            return await bot.send_message(chat_id, text, reply_markup=reply_markup)
+        except TelegramForbiddenError:
+            logger.warning("chat_unreachable", extra={"chat_id": chat_id})
+            return None
+        except TelegramRetryAfter as error:
+            last_error = error
+            logger.warning(
+                "flood_control",
+                extra={"chat_id": chat_id, "retry_after": error.retry_after},
+            )
+            await asyncio.sleep(error.retry_after)
+        except TelegramNetworkError as error:
+            last_error = error
+            logger.warning(
+                "network_error", extra={"chat_id": chat_id, "attempt": attempt}
+            )
+            await asyncio.sleep(_RETRY_PAUSE_SECONDS)
+    raise _unreachable(last_error)
+
+
+def _unreachable(last_error: Exception | None) -> Exception:
+    """возвращает ошибку для проброса после исчерпания попыток"""
+    if last_error is None:
+        return RuntimeError("отправка сообщения не удалась без причины")
+    return last_error
 
 
 def _event_chat_id(event: TelegramObject) -> int | None:

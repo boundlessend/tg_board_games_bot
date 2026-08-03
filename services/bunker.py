@@ -167,9 +167,7 @@ def deal_hands(content: BunkerContent, player_count: int) -> list[PlayerHand]:
     ]
 
 
-def pick_pairs(
-    content: BunkerContent, count: int
-) -> list[tuple[str, str]]:
+def pick_pairs(content: BunkerContent, count: int) -> list[tuple[str, str]]:
     """выбирает пары карт бункера и угроз без повторов"""
     if len(content.bunker_items) < count or len(content.threats) < count:
         raise BunkerContentError("Недостаточно карт бункера или угроз для пар.")

@@ -9,11 +9,19 @@ from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import Command, CommandObject
 from aiogram.types import FSInputFile, Message
 
-from constants import DANGEROUS_WORDS_GAME_ID, MAX_CONTENT_LEN
-from database import DatabaseError, SQLiteHistoryStorage
+from constants import (
+    DANGEROUS_WORDS_GAME_ID,
+    MAX_CONTENT_LEN,
+    MAX_IMPORT_FILE_BYTES,
+)
+from database import (
+    DatabaseError,
+    SQLiteHistoryStorage,
+    snapshot_has_core_tables,
+)
 from exceptions import DuplicateHistoryItemError
 from handlers.common import is_private_admin, split_report
-from services.random_generator import WordGame
+from services.content import WordGame
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +170,10 @@ def create_content_admin_router(
                 await message.answer("Это не похоже на файл SQLite-базы.")
                 return
 
+            if not snapshot_has_core_tables(destination):
+                await message.answer("В файле нет таблиц этого бота. Замена отменена.")
+                return
+
             try:
                 await storage.replace_database(destination)
             except DatabaseError:
@@ -277,6 +289,12 @@ def create_content_admin_router(
         document = message.document
         bot = message.bot
         if document is None or bot is None:
+            return
+        if (document.file_size or 0) > MAX_IMPORT_FILE_BYTES:
+            await message.answer(
+                f"Файл больше {MAX_IMPORT_FILE_BYTES // 1024} КБ. "
+                "Разбейте пак на части."
+            )
             return
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -396,16 +414,10 @@ async def _import_words(
     storage: SQLiteHistoryStorage, game_id: str, words: list[str]
 ) -> tuple[int, int]:
     """массово добавляет слова в пул игры, возвращает (добавлено, пропущено)"""
-    added = 0
-    skipped = 0
-    for word in words:
-        normalized = word.strip().lower()
-        if normalized == "" or len(normalized) > MAX_CONTENT_LEN:
-            skipped += 1
-            continue
-        try:
-            await storage.add_custom_word(game_id, normalized)
-            added += 1
-        except DuplicateHistoryItemError:
-            skipped += 1
-    return added, skipped
+    accepted = [
+        normalized
+        for normalized in (word.strip().lower() for word in words)
+        if normalized != "" and len(normalized) <= MAX_CONTENT_LEN
+    ]
+    added = await storage.add_custom_words_bulk(game_id, accepted)
+    return added, len(words) - added

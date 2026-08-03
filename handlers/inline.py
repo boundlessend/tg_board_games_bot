@@ -7,7 +7,7 @@ from aiogram.types import (
     InputTextMessageContent,
 )
 
-from services.random_generator import DangerousWordsContent
+from services.content import DangerousWordsContent
 
 INLINE_RESULTS_LIMIT = 10
 
@@ -29,9 +29,7 @@ def create_inline_router(content: DangerousWordsContent) -> Router:
             InlineQueryResultArticle(
                 id=str(index),
                 title=word,
-                input_message_content=InputTextMessageContent(
-                    message_text=word
-                ),
+                input_message_content=InputTextMessageContent(message_text=word),
             )
             for index, word in enumerate(words)
         ]

@@ -8,7 +8,7 @@ from keyboards import (
     create_group_menu_keyboard,
     create_private_menu_keyboard,
 )
-from services.random_generator import WordGame
+from services.content import WordGame
 
 MAIN_MENU_TEXT = "Ку, сначала выбери игру:"
 
@@ -22,9 +22,12 @@ HELP_TEXT = (
     "Команды:\n"
     "/start - открыть меню\n"
     "/help - показать эту справку\n"
+    "/play - выбрать командную игру в беседе\n"
     "/fav - сохранить последнее слово в избранное\n"
     "/favorites - показать избранное\n"
-    "/bunker - открыть «Бункер» в беседе\n\n"
+    "/favclear - очистить избранное\n"
+    "/bunker - открыть «Бункер» в беседе\n"
+    "/forgetme - удалить все мои данные\n\n"
     "Инлайн-режим: наберите @имя_бота в любом чате, чтобы получить "
     "случайные слова."
 )
@@ -58,9 +61,7 @@ def create_start_router(word_games: list[WordGame]) -> Router:
             try:
                 await message.edit_text(
                     MAIN_MENU_TEXT,
-                    reply_markup=_menu_for_chat(
-                        word_games, message.chat.type
-                    ),
+                    reply_markup=_menu_for_chat(word_games, message.chat.type),
                 )
             except TelegramBadRequest:
                 pass
@@ -69,9 +70,7 @@ def create_start_router(word_games: list[WordGame]) -> Router:
     return router
 
 
-def _menu_for_chat(
-    word_games: list[WordGame], chat_type: str
-) -> InlineKeyboardMarkup:
+def _menu_for_chat(word_games: list[WordGame], chat_type: str) -> InlineKeyboardMarkup:
     """выбирает клавиатуру меню по типу чата"""
     if chat_type == "private":
         return create_private_menu_keyboard(word_games)

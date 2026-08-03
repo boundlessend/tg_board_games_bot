@@ -1,5 +1,4 @@
 import logging
-from collections import Counter
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -15,14 +14,15 @@ from constants import (
     CURSES_HISTORY_KEY,
     WORDS_HISTORY_KEY,
 )
-from database import DatabaseError, SQLiteHistoryStorage, iso_days_ago
-from handlers.common import (
-    is_private_admin,
-    is_private_admin_callback,
-    split_report,
+from database import (
+    DatabaseError,
+    SQLiteHistoryStorage,
+    SummaryTotals,
+    iso_days_ago,
 )
+from handlers.common import is_private_admin, is_private_admin_callback
 from keyboards import create_admin_keyboard, create_private_menu_keyboard
-from services.random_generator import (
+from services.content import (
     Boss,
     Curse,
     DangerousWordsContent,
@@ -32,6 +32,7 @@ from services.random_generator import (
 logger = logging.getLogger(__name__)
 
 ADMIN_CLOSED_TEXT = "Админка закрыта"
+TOP_WORDS_LIMIT = 10
 
 
 def create_admin_router(
@@ -141,7 +142,8 @@ async def _send_summary(
 ) -> None:
     """отправляет администратору сводку по всем пользователям"""
     try:
-        statistics = await storage.get_all_user_statistics()
+        totals = await storage.get_summary_totals()
+        top_words = await storage.get_top_words(TOP_WORDS_LIMIT)
         recent_issuances = await storage.count_issuances_since(iso_days_ago(7))
         recent_users = await storage.count_active_users_since(iso_days_ago(7))
     except DatabaseError:
@@ -153,39 +155,40 @@ async def _send_summary(
         return
 
     await message.answer(
-        _build_summary(statistics, recent_issuances, recent_users),
+        _build_summary(totals, top_words, recent_issuances, recent_users),
         reply_markup=create_admin_keyboard(),
     )
 
 
 def _build_summary(
-    statistics: dict[int, dict[str, list[str]]],
+    totals: SummaryTotals,
+    top_words: list[tuple[str, int]],
     recent_issuances: int,
     recent_users: int,
 ) -> str:
-    """собирает сводку по всем пользователям"""
-    if len(statistics) == 0:
+    """собирает сводку по всем пользователям
+
+    выдачи разложены по видам, чтобы сумма сходилась с показателем за 7
+    дней: он тоже считает все игры, а не только «опасные слова»
+    """
+    if totals.users == 0:
         return "Статистика пока пустая."
 
-    total_words = sum(len(user[WORDS_HISTORY_KEY]) for user in statistics.values())
-    total_curses = sum(len(user[CURSES_HISTORY_KEY]) for user in statistics.values())
-    total_bosses = sum(len(user[BOSSES_HISTORY_KEY]) for user in statistics.values())
-
-    word_counter: Counter[str] = Counter()
-    for user in statistics.values():
-        word_counter.update(user[WORDS_HISTORY_KEY])
-    top_words = [f"{word} x{count}" for word, count in word_counter.most_common(10)]
-
+    total_issuances = (
+        totals.dangerous_words + totals.curses + totals.bosses + totals.game_words
+    )
     sections = [
         "Сводка",
-        f"Пользователей: {len(statistics)}",
-        f"Слов выдано: {total_words}",
-        f"Проклятий выдано: {total_curses}",
-        f"Боссов выдано: {total_bosses}",
-        f"Выдач за 7 дней: {recent_issuances}",
+        f"Пользователей: {totals.users}",
+        f"Слов «Опасные слова»: {totals.dangerous_words}",
+        f"Проклятий: {totals.curses}",
+        f"Боссов: {totals.bosses}",
+        f"Слов словесных игр: {totals.game_words}",
+        f"Всего выдач: {total_issuances}",
+        f"Выдач за 7 дней (все игры): {recent_issuances}",
         f"Активных за 7 дней: {recent_users}",
-        "Топ-10 слов:",
-        _format_values(top_words),
+        f"Топ-{TOP_WORDS_LIMIT} слов «Опасные слова»:",
+        _format_values([f"{word} x{count}" for word, count in top_words]),
     ]
     return "\n\n".join(sections)
 
@@ -220,7 +223,11 @@ async def _send_all_statistics(
     storage: SQLiteHistoryStorage,
     admin_id: int,
 ) -> None:
-    """отправляет администратору статистику по всем пользователям"""
+    """отправляет подробный отчёт одним файлом
+
+    отчёт растёт линейно с числом пользователей, а серия сообщений упёрлась
+    бы во флуд-контроль telegram, поэтому отдаём документом
+    """
     try:
         statistics = await storage.get_all_user_statistics()
     except DatabaseError:
@@ -232,13 +239,12 @@ async def _send_all_statistics(
         return
 
     report = _build_all_statistics_report(content, statistics)
-    chunks = split_report(report)
-    for index, chunk in enumerate(chunks):
-        is_last_chunk = index == len(chunks) - 1
-        await message.answer(
-            chunk,
-            reply_markup=create_admin_keyboard() if is_last_chunk else None,
-        )
+    document = BufferedInputFile(report.encode("utf-8"), filename="report.txt")
+    await message.answer_document(
+        document,
+        caption=f"Полный отчёт: пользователей {len(statistics)}",
+        reply_markup=create_admin_keyboard(),
+    )
 
 
 def _build_all_statistics_report(

@@ -27,6 +27,8 @@ CB_GS_SKIP = "gs:skip"
 CB_GS_REROLL = "gs:reroll"
 CB_GS_NEXT = "gs:next"
 CB_GS_FINISH = "gs:finish"
+CB_GS_FINISH_YES = "gs:finish_yes"
+CB_GS_FINISH_NO = "gs:finish_no"
 CB_GS_TEAMS_PREFIX = "gs:teams:"
 CB_GS_TIMER_PREFIX = "gs:timer:"
 
@@ -41,6 +43,8 @@ def team_label(index: int) -> str:
     return f"Команда {index + 1}"
 
 
+OPEN_PRIVATE_CHAT_TITLE = "Открыть ЛС с ботом"
+
 SESSION_START_TITLE = "Начать"
 SESSION_CANCEL_TITLE = "Отмена"
 SESSION_WORD_TITLE = "Слово в ЛС"
@@ -49,6 +53,8 @@ SESSION_SKIP_TITLE = "Пропустить"
 SESSION_REROLL_TITLE = "Реролл (-1)"
 SESSION_NEXT_TITLE = "Передать ход"
 SESSION_FINISH_TITLE = "Завершить"
+SESSION_FINISH_YES_TITLE = "Да, завершить"
+SESSION_FINISH_NO_TITLE = "Продолжить игру"
 
 WORD_GAME_GET_TITLE = "Получить слово"
 WORD_GAME_RESET_TITLE = "Новая игра (сбросить)"
@@ -107,9 +113,11 @@ CB_DG_NEXT = "dg:next"
 CB_DG_CURSE = "dg:curse"
 CB_DG_CURSE_KEEP = "dg:curse_keep"
 CB_DG_CURSE_REROLL = "dg:curse_reroll"
+CB_DG_CURSE_DROP = "dg:curse_drop"
 CB_DG_BOSS = "dg:boss"
 CB_DG_BOSS_KEEP = "dg:boss_keep"
 CB_DG_BOSS_REROLL = "dg:boss_reroll"
+CB_DG_BOSS_DROP = "dg:boss_drop"
 CB_DG_FINISH = "dg:finish"
 
 DG_NEW_ROUND_TITLE = "Новый раунд"
@@ -118,6 +126,7 @@ DG_BOSS_TITLE = "Босс (финал)"
 DG_FINISH_TITLE = "Завершить"
 DG_KEEP_TITLE = "Принять"
 DG_REROLL_TITLE = "Реролл"
+DG_DROP_TITLE = "Убрать"
 
 TELEGRAM_MESSAGE_LIMIT = 3500
 MAX_CONTENT_LEN = 500
@@ -126,6 +135,12 @@ BOSSES_HISTORY_KEY = "bosses"
 CURSES_HISTORY_KEY = "curses"
 WORDS_HISTORY_KEY = "words"
 
-USER_BOSSES_TABLE_NAME = "user_bosses"
-USER_CURSES_TABLE_NAME = "user_curses"
-USER_WORDS_TABLE_NAME = "user_words"
+CB_FORGET_ME_YES = "me:forget_yes"
+CB_FORGET_ME_NO = "me:forget_no"
+
+FORGET_ME_YES_TITLE = "Да, удалить всё"
+FORGET_ME_NO_TITLE = "Отмена"
+
+# сессия без активности дольше суток считается брошенной и убирается при старте
+SESSION_TTL_DAYS = 1
+MAX_IMPORT_FILE_BYTES = 1024 * 1024

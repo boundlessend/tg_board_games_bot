@@ -13,6 +13,8 @@ from aiogram.types import CallbackQuery, Message
 from constants import (
     CB_GS_CANCEL,
     CB_GS_FINISH,
+    CB_GS_FINISH_NO,
+    CB_GS_FINISH_YES,
     CB_GS_JOIN_PREFIX,
     CB_GS_NEW_PREFIX,
     CB_GS_NEXT,
@@ -31,19 +33,23 @@ from constants import (
 )
 from database import DatabaseError, SQLiteHistoryStorage
 from handlers.common import (
+    ChatLocks,
     data_startswith,
+    is_chat_manager,
     lookup_chat_session,
     make_chat_lock_middleware,
     make_chat_persist_middleware,
-    pick_word,
+    send_with_retry,
 )
 from handlers.ui import edit_menu
 from keyboards import (
     create_play_games_keyboard,
+    create_session_finish_keyboard,
     create_session_lobby_keyboard,
     create_session_play_keyboard,
 )
-from services.random_generator import WordGame
+from services.content import WordGame, group_games
+from services.picking import pick_word
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +79,13 @@ def create_group_session_router(
     word_games: list[WordGame],
     storage: SQLiteHistoryStorage,
     sessions: dict[int, GroupSession],
+    bot_username: str,
 ) -> Router:
     """создаёт роутер групповых сессий (команды + табло, слова в ЛС)"""
     router = Router()
-    group_games = [game for game in word_games if game.game_id != "whoami"]
-    games_by_id = {game.game_id: game for game in group_games}
-    locks: dict[int, asyncio.Lock] = {}
+    playable_games = group_games(word_games)
+    games_by_id = {game.game_id: game for game in playable_games}
+    locks = ChatLocks()
 
     async def _persist_chat(chat_id: int) -> None:
         await _persist_chat_session(storage, sessions, chat_id)
@@ -96,7 +103,7 @@ def create_group_session_router(
             return
         await message.answer(
             "Выбери игру для сессии:",
-            reply_markup=create_play_games_keyboard(group_games),
+            reply_markup=create_play_games_keyboard(playable_games),
         )
 
     @router.callback_query(data_startswith(CB_GS_NEW_PREFIX))
@@ -105,6 +112,9 @@ def create_group_session_router(
         message = callback.message
         if not isinstance(message, Message):
             await callback.answer()
+            return
+        if not _is_group(message.chat.type):
+            await callback.answer("Командные игры работают в беседе.", show_alert=True)
             return
         game = games_by_id.get((callback.data or "")[len(CB_GS_NEW_PREFIX) :])
         if game is None:
@@ -120,7 +130,7 @@ def create_group_session_router(
         if existing is not None:
             _cancel_timer(existing)
 
-        sessions[message.chat.id] = GroupSession(
+        session = GroupSession(
             game=game,
             host_id=callback.from_user.id,
             team_count=MIN_TEAMS,
@@ -129,11 +139,13 @@ def create_group_session_router(
             started=False,
             explainer_id=None,
         )
-        session = sessions[message.chat.id]
+        sessions[message.chat.id] = session
         await edit_menu(
             callback,
             _render_lobby(session),
-            create_session_lobby_keyboard(session.team_count, session.turn_seconds),
+            create_session_lobby_keyboard(
+                session.team_count, session.turn_seconds, bot_username
+            ),
         )
 
     @router.callback_query(data_startswith(CB_GS_JOIN_PREFIX))
@@ -156,7 +168,9 @@ def create_group_session_router(
         await edit_menu(
             callback,
             _render_lobby(session),
-            create_session_lobby_keyboard(session.team_count, session.turn_seconds),
+            create_session_lobby_keyboard(
+                session.team_count, session.turn_seconds, bot_username
+            ),
         )
 
     @router.callback_query(data_startswith(CB_GS_TEAMS_PREFIX))
@@ -184,7 +198,9 @@ def create_group_session_router(
         await edit_menu(
             callback,
             _render_lobby(session),
-            create_session_lobby_keyboard(session.team_count, session.turn_seconds),
+            create_session_lobby_keyboard(
+                session.team_count, session.turn_seconds, bot_username
+            ),
         )
 
     @router.callback_query(data_startswith(CB_GS_TIMER_PREFIX))
@@ -206,7 +222,9 @@ def create_group_session_router(
         await edit_menu(
             callback,
             _render_lobby(session),
-            create_session_lobby_keyboard(session.team_count, session.turn_seconds),
+            create_session_lobby_keyboard(
+                session.team_count, session.turn_seconds, bot_username
+            ),
         )
 
     @router.callback_query(F.data == CB_GS_START)
@@ -239,13 +257,15 @@ def create_group_session_router(
 
     @router.callback_query(F.data == CB_GS_CANCEL)
     async def handle_cancel(callback: CallbackQuery) -> None:
-        """отменяет сессию (только создатель)"""
+        """отменяет сессию (создатель или администратор чата)"""
         session, chat_id = lookup_chat_session(callback, sessions)
         if session is None or chat_id is None:
             await callback.answer()
             return
-        if callback.from_user.id != session.host_id:
-            await callback.answer("Отменить может создатель.", show_alert=True)
+        if not await _may_manage(callback, session, chat_id):
+            await callback.answer(
+                "Отменить может создатель или админ чата.", show_alert=True
+            )
             return
 
         _cancel_timer(session)
@@ -266,13 +286,17 @@ def create_group_session_router(
             )
             return
 
+        previous_explainer = session.explainer_id
         delivered = await _deliver_word(callback, session, storage, user.id)
         if not delivered:
             return
         session.explainer_id = user.id
         bot = callback.bot
         if bot is not None:
-            _start_timer(chat_id, session, bot, locks[chat_id], _persist_chat)
+            _start_timer(chat_id, session, bot, locks, _persist_chat)
+            await _announce_explainer_change(
+                bot, chat_id, session, previous_explainer, user.id
+            )
         await edit_menu(callback, _render_play(session), create_session_play_keyboard())
 
     @router.callback_query(F.data == CB_GS_SCORE)
@@ -358,6 +382,32 @@ def create_group_session_router(
         await edit_menu(callback, _render_play(session), create_session_play_keyboard())
 
     @router.callback_query(F.data == CB_GS_FINISH)
+    async def handle_finish_request(callback: CallbackQuery) -> None:
+        """спрашивает подтверждение перед завершением партии"""
+        session, _ = lookup_chat_session(callback, sessions)
+        if session is None or not session.started:
+            await callback.answer()
+            return
+        if callback.from_user.id not in session.team_of:
+            await callback.answer("Только участники сессии.", show_alert=True)
+            return
+
+        await edit_menu(
+            callback,
+            _render_play(session) + "\n\nЗавершить партию и показать итоги?",
+            create_session_finish_keyboard(),
+        )
+
+    @router.callback_query(F.data == CB_GS_FINISH_NO)
+    async def handle_finish_cancel(callback: CallbackQuery) -> None:
+        """возвращает игру после отказа от завершения"""
+        session, _ = lookup_chat_session(callback, sessions)
+        if session is None or not session.started:
+            await callback.answer()
+            return
+        await edit_menu(callback, _render_play(session), create_session_play_keyboard())
+
+    @router.callback_query(F.data == CB_GS_FINISH_YES)
     async def handle_finish(callback: CallbackQuery) -> None:
         """завершает сессию и показывает итоговое табло"""
         session, chat_id = lookup_chat_session(callback, sessions)
@@ -371,6 +421,17 @@ def create_group_session_router(
         _cancel_timer(session)
         sessions.pop(chat_id, None)
         await _edit_final(callback, "Игра окончена.\n\n" + _render_scores(session))
+
+    async def _may_manage(
+        callback: CallbackQuery, session: GroupSession, chat_id: int
+    ) -> bool:
+        """проверяет право распоряжаться партией"""
+        bot = callback.bot
+        if bot is None:
+            return callback.from_user.id == session.host_id
+        return await is_chat_manager(
+            bot, chat_id, callback.from_user.id, session.host_id
+        )
 
     return router
 
@@ -484,6 +545,25 @@ async def _deliver_word(
     return True
 
 
+async def _announce_explainer_change(
+    bot: Bot,
+    chat_id: int,
+    session: GroupSession,
+    previous_explainer: int | None,
+    new_explainer: int,
+) -> None:
+    """предупреждает чат, что слово перехватил другой игрок команды"""
+    if previous_explainer is None or previous_explainer == new_explainer:
+        return
+    previous_name = session.players.get(previous_explainer, "игрок")
+    new_name = session.players.get(new_explainer, "игрок")
+    await send_with_retry(
+        bot,
+        chat_id,
+        f"Слово перешло: объясняет {new_name} вместо {previous_name}.",
+    )
+
+
 async def _edit_final(callback: CallbackQuery, text: str) -> None:
     """заменяет сообщение сессии финальным текстом без клавиатуры"""
     message = callback.message
@@ -532,14 +612,14 @@ def _start_timer(
     chat_id: int,
     session: GroupSession,
     bot: Bot,
-    lock: asyncio.Lock,
+    locks: ChatLocks,
     persist: Callable[[int], Awaitable[None]],
 ) -> None:
     """запускает таймер хода, если он включён и ещё не идёт"""
     if session.turn_seconds <= 0 or session.timer_task is not None:
         return
     session.timer_task = asyncio.create_task(
-        _run_timer(chat_id, session, bot, lock, persist, session.turn_epoch)
+        _run_timer(chat_id, session, bot, locks, persist, session.turn_epoch)
     )
 
 
@@ -555,7 +635,7 @@ async def _run_timer(
     chat_id: int,
     session: GroupSession,
     bot: Bot,
-    lock: asyncio.Lock,
+    locks: ChatLocks,
     persist: Callable[[int], Awaitable[None]],
     epoch: int,
 ) -> None:
@@ -564,7 +644,7 @@ async def _run_timer(
         await asyncio.sleep(session.turn_seconds)
     except asyncio.CancelledError:
         return
-    async with lock:
+    async with locks.hold(chat_id):
         # ponytail: ход уже сменён вручную/новым таймером, если эпоха ушла
         if session.turn_epoch != epoch:
             return
@@ -576,14 +656,12 @@ async def _run_timer(
             await persist(chat_id)
         except DatabaseError:
             logger.exception("session_persist_failed", extra={"scope": _SCOPE})
-        try:
-            await bot.send_message(
-                chat_id,
-                "Время вышло! Ход переходит.\n\n" + _render_play(session),
-                reply_markup=create_session_play_keyboard(),
-            )
-        except TelegramBadRequest:
-            pass
+        await send_with_retry(
+            bot,
+            chat_id,
+            "Время вышло! Ход переходит.\n\n" + _render_play(session),
+            create_session_play_keyboard(),
+        )
 
 
 def _is_group(chat_type: str) -> bool:
