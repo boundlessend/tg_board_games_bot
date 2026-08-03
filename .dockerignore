@@ -15,6 +15,7 @@ docker-compose.yml
 .pytest_cache/
 tests/
 db/
+backups/
 *.sqlite3
 requirements-dev.txt
 *.md

@@ -14,9 +14,13 @@ COPY . .
 
 # непривилегированный пользователь; /db - том для персистентной базы
 # (DATABASE_PATH уже указывает в него, named volume берёт права из образа)
-RUN useradd --create-home app && mkdir -p /db && chown app /db
+RUN useradd --create-home app && mkdir -p /db /backups && chown app /db /backups
 USER app
 
 VOLUME ["/db"]
+
+# отметку живости обновляет сам бот: зависший polling так тоже отловится
+HEALTHCHECK --interval=60s --timeout=5s --start-period=30s --retries=3 \
+    CMD ["python", "health.py"]
 
 CMD ["python", "bot.py"]

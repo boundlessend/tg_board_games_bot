@@ -1,3 +1,10 @@
+x-logging: &default-logging
+  # без ротации json-лог растёт до заполнения диска
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   bot:
     build: .
@@ -9,8 +16,30 @@ services:
     environment:
       DATABASE_PATH: /db/bot.sqlite3
     restart: unless-stopped
+    mem_limit: 512m
+    logging: *default-logging
     volumes:
       - db:/db
 
+  backup:
+    build: .
+    container_name: tg-board-games-backup
+    command:
+      - python
+      - scripts/backup.py
+      - --database=/db/bot.sqlite3
+      - --backup-dir=/backups
+      - --interval=86400
+      - --keep=7
+    environment:
+      DATABASE_PATH: /db/bot.sqlite3
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *default-logging
+    volumes:
+      - db:/db
+      - backups:/backups
+
 volumes:
   db:
+  backups:

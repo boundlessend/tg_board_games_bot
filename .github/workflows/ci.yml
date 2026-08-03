@@ -22,16 +22,27 @@ jobs:
       - name: Ruff (lint)
         run: ruff check .
 
+      - name: Ruff (format)
+        run: ruff format --check .
+
       - name: Mypy (types)
         run: mypy .
 
       - name: Tests
         run: pytest --cov=. --cov-report=term-missing
 
+      - name: Audit dependencies
+        run: |
+          pip install pip-audit
+          pip-audit --requirement requirements.txt --strict
+
   docker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate compose file
+        run: docker compose config --quiet
 
       - name: Docker build
         run: docker build .
