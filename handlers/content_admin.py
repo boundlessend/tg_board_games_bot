@@ -25,6 +25,10 @@ from services.content import WordGame
 
 logger = logging.getLogger(__name__)
 
+# предел пользовательского пула одной игры: весь пул вычитывается на каждую
+# выдачу слова, поэтому импорт паком не должен раздувать его безгранично
+MAX_CUSTOM_POOL_WORDS = 2000
+
 
 def create_content_admin_router(
     storage: SQLiteHistoryStorage,
@@ -42,6 +46,7 @@ def create_content_admin_router(
 
     @router.message(Command("addword"))
     async def handle_add_word(message: Message, command: CommandObject) -> None:
+        """добавляет пользовательское слово в пул игры"""
         parts = (command.args or "").strip().split(maxsplit=1)
         if len(parts) < 2:
             await message.answer(_addword_usage(word_pools))
@@ -81,6 +86,7 @@ def create_content_admin_router(
 
     @router.message(Command("addcurse"))
     async def handle_add_curse(message: Message, command: CommandObject) -> None:
+        """добавляет пользовательское проклятье"""
         pair = _parse_pair(command.args)
         if pair is None:
             await message.answer("Формат: /addcurse <название> | <описание>")
@@ -111,6 +117,7 @@ def create_content_admin_router(
 
     @router.message(Command("addboss"))
     async def handle_add_boss(message: Message, command: CommandObject) -> None:
+        """добавляет пользовательского босса"""
         pair = _parse_pair(command.args)
         if pair is None:
             await message.answer("Формат: /addboss <имя> | <описание>")
@@ -139,6 +146,7 @@ def create_content_admin_router(
 
     @router.message(Command("backup"))
     async def handle_backup(message: Message) -> None:
+        """отправляет админу файл снимка базы"""
         with tempfile.TemporaryDirectory() as tmp:
             snapshot = Path(tmp) / "bot.sqlite3"
             try:
@@ -152,6 +160,7 @@ def create_content_admin_router(
 
     @router.message(_is_restore_document)
     async def handle_restore(message: Message) -> None:
+        """заменяет базу присланным файлом снимка"""
         document = message.document
         bot = message.bot
         if document is None or bot is None:
@@ -189,14 +198,25 @@ def create_content_admin_router(
                 await message.answer("Не удалось восстановить базу.")
                 return
 
-        await message.answer("База восстановлена из файла.")
+        await message.answer(
+            "База восстановлена из файла.\n"
+            "Запросы, начатые до замены, могли оборваться с ошибкой: "
+            "перезапустите игру, если бот отвечает странно."
+        )
 
     @router.message(Command("restore"))
     async def handle_restore_hint(message: Message) -> None:
-        await message.answer("Пришлите файл базы (.sqlite3) с подписью /restore.")
+        """подсказывает формат восстановления базы"""
+        await message.answer(
+            "Пришлите файл базы (.sqlite3) с подписью /restore.\n"
+            "Файл заменяется под живыми соединениями: запросы, которые "
+            "выполняются в этот момент, завершатся ошибкой. Не делайте "
+            "замену в разгар партии."
+        )
 
     @router.message(Command("listcontent"))
     async def handle_list_content(message: Message) -> None:
+        """показывает весь пользовательский контент"""
         try:
             sections = ["Пользовательский контент:"]
             for game_id in sorted(word_pools):
@@ -223,6 +243,7 @@ def create_content_admin_router(
 
     @router.message(Command("delword"))
     async def handle_del_word(message: Message, command: CommandObject) -> None:
+        """удаляет пользовательское слово из пула игры"""
         parts = (command.args or "").strip().split(maxsplit=1)
         if len(parts) < 2 or parts[0] not in word_pools:
             await message.answer(
@@ -246,6 +267,7 @@ def create_content_admin_router(
 
     @router.message(Command("delcurse"))
     async def handle_del_curse(message: Message, command: CommandObject) -> None:
+        """удаляет пользовательское проклятье по id"""
         row_id = _parse_custom_id(command.args, "cc_")
         if row_id is None:
             await message.answer("Формат: /delcurse <id> (например cc_3)")
@@ -262,6 +284,7 @@ def create_content_admin_router(
 
     @router.message(Command("delboss"))
     async def handle_del_boss(message: Message, command: CommandObject) -> None:
+        """удаляет пользовательского босса по id"""
         row_id = _parse_custom_id(command.args, "cb_")
         if row_id is None:
             await message.answer("Формат: /delboss <id> (например cb_3)")
@@ -278,6 +301,7 @@ def create_content_admin_router(
 
     @router.message(_is_import_words_document)
     async def handle_import_words(message: Message) -> None:
+        """импортирует пак слов из файла в пул игры"""
         caption_parts = (message.caption or "").strip().split()
         if len(caption_parts) < 2 or caption_parts[1] not in word_pools:
             await message.answer(
@@ -316,6 +340,14 @@ def create_content_admin_router(
                 return
 
         try:
+            pool_size = len(await storage.get_custom_words(game_id))
+            if pool_size + len(words) > MAX_CUSTOM_POOL_WORDS:
+                await message.answer(
+                    f"Пул «{game_id}» переполнится: в нём {pool_size} слов, "
+                    f"в паке {len(words)}, предел {MAX_CUSTOM_POOL_WORDS}. "
+                    "Удалите лишние слова или урежьте пак."
+                )
+                return
             added, skipped = await _import_words(storage, game_id, words)
         except DatabaseError:
             logger.exception("database_error", extra={"action": "import"})
@@ -405,7 +437,14 @@ def _parse_words_pack(raw: bytes) -> list[str]:
             raise ValueError("некорректный JSON-пак") from error
         if not isinstance(data, list):
             raise ValueError("JSON-пак должен быть списком")
-        return [str(item).strip() for item in data if str(item).strip()]
+        words: list[str] = []
+        for item in data:
+            if not isinstance(item, str):
+                raise ValueError("JSON-пак должен содержать только строки")
+            stripped = item.strip()
+            if stripped != "":
+                words.append(stripped)
+        return words
     parts = re.split(r"[\n,;\t]+", text)
     return [part.strip() for part in parts if part.strip()]
 

@@ -104,40 +104,32 @@ def _hard_wrap(line: str) -> list[str]:
     ]
 
 
-def make_persist_middleware(
-    persist: Callable[[], Awaitable[None]], scope: str
-) -> _Middleware:
-    """строит middleware: сохраняет снапшот сессий после обработки события"""
-
-    async def middleware(
-        handler: _Handler, event: TelegramObject, data: dict[str, Any]
-    ) -> Any:
-        result = await handler(event, data)
-        try:
-            await persist()
-        except DatabaseError:
-            logger.exception("session_persist_failed", extra={"scope": scope})
-        return result
-
-    return middleware
+def is_not_modified(error: TelegramBadRequest) -> bool:
+    """отличает штатный отказ telegram править неизменившееся сообщение"""
+    return "message is not modified" in str(error).lower()
 
 
 def make_chat_persist_middleware(
     persist_chat: Callable[[int], Awaitable[None]], scope: str
 ) -> _Middleware:
-    """строит middleware: сохраняет снапшот сессии чата события после обработки"""
+    """строит middleware: сохраняет снапшот сессии чата события после обработки
+
+    снапшот пишется и когда хендлер упал: состояние уже могло измениться до
+    исключения, и без сохранения это изменение потерялось бы
+    """
 
     async def middleware(
         handler: _Handler, event: TelegramObject, data: dict[str, Any]
     ) -> Any:
-        result = await handler(event, data)
-        chat_id = _event_chat_id(event)
-        if chat_id is not None:
-            try:
-                await persist_chat(chat_id)
-            except DatabaseError:
-                logger.exception("session_persist_failed", extra={"scope": scope})
-        return result
+        try:
+            return await handler(event, data)
+        finally:
+            chat_id = _event_chat_id(event)
+            if chat_id is not None:
+                try:
+                    await persist_chat(chat_id)
+                except DatabaseError:
+                    logger.exception("session_persist_failed", extra={"scope": scope})
 
     return middleware
 

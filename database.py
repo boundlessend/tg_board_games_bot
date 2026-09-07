@@ -1,3 +1,5 @@
+import json
+import logging
 import shutil
 import sqlite3
 from contextlib import closing
@@ -32,7 +34,15 @@ from sqlalchemy.ext.asyncio import (
 from exceptions import DuplicateHistoryItemError
 from services.content import Boss, Curse
 
+logger = logging.getLogger(__name__)
+
 USER_GAME_WORDS_TABLE_NAME = "user_game_words"
+
+# разобранный json снапшота сессии: вложенность произвольная, поэтому тип
+# рекурсивный
+type JsonValue = (
+    str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
+)
 
 # версия схемы в PRAGMA user_version: растёт при каждом несовместимом
 # изменении, чтобы бот не открыл базу, собранную более новой версией
@@ -154,6 +164,45 @@ class DatabaseError(RuntimeError):
     """ошибка работы с базой данных"""
 
     pass
+
+
+def _parse_snapshot_or_none(scope: str, key: str, data: str) -> JsonValue | None:
+    """разбирает json снапшота сессии, возвращая None для повреждённой строки
+
+    повреждённый снапшот не восстановится и при старте бота, поэтому он не
+    ошибка вызывающего, а мусор, который вызывающий волен убрать
+    """
+    try:
+        snapshot: JsonValue = json.loads(data)
+    except json.JSONDecodeError:
+        logger.warning(
+            "session_snapshot_unreadable", extra={"scope": scope, "key": key}
+        )
+        return None
+
+    return snapshot
+
+
+def _snapshot_mentions_user(value: JsonValue, telegram_id: int) -> bool:
+    """ищет telegram_id в разобранном снапшоте сессии
+
+    id игрока лежит и в значениях, и в ключах словарей, где json хранит его
+    строкой, поэтому сравниваем оба представления
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value == telegram_id
+    if isinstance(value, str):
+        return value == str(telegram_id)
+    if isinstance(value, list):
+        return any(_snapshot_mentions_user(item, telegram_id) for item in value)
+    if isinstance(value, dict):
+        return any(
+            key == str(telegram_id) or _snapshot_mentions_user(item, telegram_id)
+            for key, item in value.items()
+        )
+    return False
 
 
 @dataclass(frozen=True)
@@ -713,7 +762,14 @@ class SQLiteHistoryStorage:
         return [(str(row[0]), int(row[1])) for row in rows]
 
     async def delete_user_data(self, telegram_id: int) -> int:
-        """удаляет все личные данные пользователя, возвращает число строк"""
+        """удаляет все личные данные пользователя, возвращает число строк
+
+        снапшот активной партии из session_state удаляется целиком, если
+        пользователь в нём упоминается: схемы снапшотов у игр разные и держат
+        связанные структуры (пары обсуждений, очередь голосования, руки,
+        параллельные списки объясняющих), поэтому вырезать одного игрока из
+        json нельзя, не оставив партию в противоречивом состоянии
+        """
         removed = 0
         try:
             async with self._engine.begin() as connection:
@@ -723,10 +779,41 @@ class SQLiteHistoryStorage:
                         delete(table).where(table.c.telegram_id == telegram_id)
                     )
                     removed += result.rowcount
+                removed += await self._delete_user_sessions(connection, telegram_id)
         except SQLAlchemyError as error:
             raise DatabaseError(
                 f"Не удалось удалить данные telegram_id={telegram_id}."
             ) from error
+
+        return removed
+
+    async def _delete_user_sessions(
+        self, connection: AsyncConnection, telegram_id: int
+    ) -> int:
+        """удаляет снапшоты сессий, в которых упоминается пользователь"""
+        result = await connection.execute(
+            select(
+                session_state_table.c.scope,
+                session_state_table.c.key,
+                session_state_table.c.data,
+            )
+        )
+        removed = 0
+        for scope, key, data in result.fetchall():
+            # нечитаемый снапшот всё равно не восстановится при старте, а
+            # исключение здесь выключило бы удаление данных для всех сразу
+            snapshot = _parse_snapshot_or_none(str(scope), str(key), str(data))
+            if snapshot is not None and not _snapshot_mentions_user(
+                snapshot, telegram_id
+            ):
+                continue
+            await connection.execute(
+                delete(session_state_table).where(
+                    session_state_table.c.scope == scope,
+                    session_state_table.c.key == key,
+                )
+            )
+            removed += 1
 
         return removed
 

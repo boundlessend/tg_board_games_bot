@@ -87,7 +87,7 @@ def create_dangerous_group_router(
     locks = ChatLocks()
 
     async def _persist_chat(chat_id: int) -> None:
-        await _persist_chat_session(storage, sessions, chat_id)
+        await persist_chat_session(storage, sessions, chat_id)
 
     router.callback_query.middleware(make_chat_lock_middleware(locks))
     router.callback_query.middleware(
@@ -639,7 +639,7 @@ def _load_session(data: dict[str, Any]) -> DangerousGroup:
     )
 
 
-async def _persist_chat_session(
+async def persist_chat_session(
     storage: SQLiteHistoryStorage,
     sessions: dict[int, DangerousGroup],
     chat_id: int,

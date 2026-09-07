@@ -34,24 +34,30 @@ async def select_unique_item[T](
         items, get_item_id, get_seen_ids, telegram_id
     )
 
-    while len(available_items) > 0:
+    while True:
         selected_item = random.choice(available_items)
         try:
             await save_seen_id(telegram_id, get_item_id(selected_item))
             return selected_item, seen_count + 1
         except DuplicateHistoryItemError:
-            # параллельная выдача успела занять элемент: перечитываем историю
+            # параллельная выдача успела занять элемент: перечитываем историю,
+            # пустой список тут же поднимет EmptyPoolError из _load_available
             seen_count, available_items = await _load_available(
                 items, get_item_id, get_seen_ids, telegram_id
             )
-
-    raise EmptyPoolError("Пул доступных элементов пуст.")
 
 
 def pick_unique[T](
     pool: list[T], issued: set[str], get_id: Callable[[T], str]
 ) -> T | None:
-    """выбирает элемент без повтора в сессии, сбрасывая круг при исчерпании"""
+    """выбирает элемент без повтора в сессии, сбрасывая круг при исчерпании
+
+    осознанно мутирует issued: add при выдаче и clear при сбросе круга.
+    множество живёт в объекте групповой сессии, вызывающий код в
+    handlers/dangerous_group.py и handlers/group_session.py рассчитывает,
+    что после вызова оно уже обновлено; побочный эффект в том, что сброс
+    круга вызывающему не виден
+    """
     if len(pool) == 0:
         return None
     available = [item for item in pool if get_id(item) not in issued]
@@ -64,7 +70,10 @@ def pick_unique[T](
 
 
 def pick_word(pool: list[str], issued: set[str]) -> str:
-    """выбирает слово без повтора в сессии (пул считается непустым)"""
+    """выбирает слово без повтора в сессии (пул считается непустым)
+
+    как и pick_unique, мутирует issued
+    """
     chosen = pick_unique(pool, issued, identity)
     if chosen is None:
         raise ValueError("пул слов пуст")

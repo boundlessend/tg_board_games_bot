@@ -49,6 +49,7 @@ def create_admin_router(
 
     @router.message(Command("admin"))
     async def handle_admin_open(message: Message) -> None:
+        """открывает админ-меню со сводкой по команде /admin"""
         user = message.from_user
         if user is None:
             return
@@ -56,6 +57,7 @@ def create_admin_router(
 
     @router.callback_query(F.data == CB_ADMIN_STATS)
     async def handle_admin_stats_request(callback: CallbackQuery) -> None:
+        """отправляет подробный отчёт по статистике файлом"""
         message = callback.message
         if isinstance(message, Message):
             await _send_all_statistics(
@@ -65,6 +67,7 @@ def create_admin_router(
 
     @router.callback_query(F.data == CB_ADMIN_CSV)
     async def handle_admin_csv(callback: CallbackQuery) -> None:
+        """выгружает статистику по словам в csv"""
         message = callback.message
         if not isinstance(message, Message):
             await callback.answer()
@@ -92,6 +95,7 @@ def create_admin_router(
 
     @router.callback_query(F.data == CB_ADMIN_ACTIVITY)
     async def handle_admin_activity(callback: CallbackQuery) -> None:
+        """показывает выдачи по дням за две недели"""
         message = callback.message
         if not isinstance(message, Message):
             await callback.answer()
@@ -117,6 +121,7 @@ def create_admin_router(
 
     @router.callback_query(F.data == CB_ADMIN_CLOSE)
     async def handle_admin_close(callback: CallbackQuery) -> None:
+        """закрывает админ-меню и возвращает приватное меню"""
         message = callback.message
         if isinstance(message, Message):
             try:
@@ -187,7 +192,7 @@ def _format_activity(by_day: list[tuple[str, int]]) -> str:
     """форматирует активность по дням для админского отчёта"""
     if len(by_day) == 0:
         return "Активности за период нет."
-    lines = ["Выдачи по дням (14 дней):"]
+    lines = ["Выдачи по дням (14 дней, даты в UTC):"]
     lines.extend(f"{day}: {count}" for day, count in by_day)
     return "\n".join(lines)
 

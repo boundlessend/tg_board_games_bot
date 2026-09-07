@@ -1,5 +1,6 @@
 """эксплуатационная обвязка: бэкапы с ротацией, heartbeat, формат логов"""
 
+import json
 import logging
 import time
 from pathlib import Path
@@ -69,7 +70,7 @@ def test_heartbeat_detects_stale_process(tmp_path: Path) -> None:
 
 def test_structured_formatter_keeps_extra_fields() -> None:
     """поля из extra попадают в строку лога"""
-    formatter = StructuredFormatter("%(levelname)s %(message)s")
+    formatter = StructuredFormatter()
     record = logging.LogRecord(
         name="test",
         level=logging.ERROR,
@@ -82,15 +83,15 @@ def test_structured_formatter_keeps_extra_fields() -> None:
     record.telegram_id = 42
     record.action = "wg_word"
 
-    line = formatter.format(record)
-    assert "database_error" in line
-    assert '"telegram_id": 42' in line
-    assert '"action": "wg_word"' in line
+    payload = json.loads(formatter.format(record))
+    assert payload["message"] == "database_error"
+    assert payload["telegram_id"] == 42
+    assert payload["action"] == "wg_word"
 
 
-def test_structured_formatter_without_extra_stays_plain() -> None:
-    """без extra строка лога не обрастает лишним хвостом"""
-    formatter = StructuredFormatter("%(message)s")
+def test_structured_formatter_writes_single_json_object() -> None:
+    """запись без extra остаётся разбираемым json с базовыми полями"""
+    formatter = StructuredFormatter()
     record = logging.LogRecord(
         name="test",
         level=logging.INFO,
@@ -100,7 +101,10 @@ def test_structured_formatter_without_extra_stays_plain() -> None:
         args=None,
         exc_info=None,
     )
-    assert formatter.format(record) == "started"
+    payload = json.loads(formatter.format(record))
+    assert payload["message"] == "started"
+    assert payload["level"] == "INFO"
+    assert payload["logger"] == "test"
 
 
 def test_heartbeat_timestamp_moves_forward(tmp_path: Path) -> None:

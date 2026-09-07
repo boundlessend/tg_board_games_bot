@@ -29,6 +29,10 @@ FORGET_ME_TEXT = (
     "начнётся с нуля."
 )
 
+FORGET_ME_PRIVATE_TEXT = "Удаление данных только в личке: напиши мне туда /forgetme."
+
+FOREIGN_CONFIRMATION_TEXT = "Это чужое подтверждение."
+
 
 def create_settings_router(storage: SQLiteHistoryStorage) -> Router:
     """создаёт роутер меню настроек и удаления личных данных"""
@@ -59,11 +63,19 @@ def create_settings_router(storage: SQLiteHistoryStorage) -> Router:
     @router.message(Command("forgetme"))
     async def handle_forget_me_request(message: Message) -> None:
         """спрашивает подтверждение перед удалением личных данных"""
+        if message.chat.type != "private":
+            await message.answer(FORGET_ME_PRIVATE_TEXT)
+            return
+
         await message.answer(FORGET_ME_TEXT, reply_markup=create_forget_me_keyboard())
 
     @router.callback_query(F.data == CB_FORGET_ME_NO)
     async def handle_forget_me_cancel(callback: CallbackQuery) -> None:
         """отменяет удаление личных данных"""
+        if not _is_own_confirmation(callback):
+            await callback.answer(FOREIGN_CONFIRMATION_TEXT, show_alert=True)
+            return
+
         message = callback.message
         if isinstance(message, Message):
             await message.edit_text("Отменено, данные на месте.")
@@ -72,6 +84,10 @@ def create_settings_router(storage: SQLiteHistoryStorage) -> Router:
     @router.callback_query(F.data == CB_FORGET_ME_YES)
     async def handle_forget_me(callback: CallbackQuery) -> None:
         """удаляет всю историю, избранное и настройки пользователя"""
+        if not _is_own_confirmation(callback):
+            await callback.answer(FOREIGN_CONFIRMATION_TEXT, show_alert=True)
+            return
+
         telegram_id = callback.from_user.id
         try:
             removed = await storage.delete_user_data(telegram_id)
@@ -89,6 +105,16 @@ def create_settings_router(storage: SQLiteHistoryStorage) -> Router:
         await callback.answer()
 
     return router
+
+
+def _is_own_confirmation(callback: CallbackQuery) -> bool:
+    """проверяет, что кнопку /forgetme жмёт автор команды
+
+    команда живёт только в личном чате, где id чата совпадает с id
+    пользователя, поэтому отдельно запоминать автора не нужно
+    """
+    message = callback.message
+    return message is not None and message.chat.id == callback.from_user.id
 
 
 async def _show_settings(

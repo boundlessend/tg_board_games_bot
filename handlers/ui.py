@@ -1,5 +1,11 @@
+import logging
+
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+
+from handlers.common import is_not_modified
+
+logger = logging.getLogger(__name__)
 
 
 async def edit_menu(
@@ -10,8 +16,13 @@ async def edit_menu(
     if isinstance(message, Message):
         try:
             await message.edit_text(text, reply_markup=keyboard)
-        except TelegramBadRequest:
-            pass
+        except TelegramBadRequest as error:
+            if not is_not_modified(error):
+                logger.warning(
+                    "menu_edit_failed",
+                    extra={"chat_id": message.chat.id, "error": str(error)},
+                )
+                raise
     await callback.answer()
 
 
@@ -21,6 +32,11 @@ async def edit_result(callback: CallbackQuery, text: str) -> None:
     if isinstance(message, Message):
         try:
             await message.edit_text(text, reply_markup=message.reply_markup)
-        except TelegramBadRequest:
-            pass
+        except TelegramBadRequest as error:
+            if not is_not_modified(error):
+                logger.warning(
+                    "result_edit_failed",
+                    extra={"chat_id": message.chat.id, "error": str(error)},
+                )
+                raise
     await callback.answer()

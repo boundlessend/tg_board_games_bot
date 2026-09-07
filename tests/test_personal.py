@@ -166,13 +166,14 @@ async def test_private_menu_shows_only_private_games(
 
 
 async def test_inline_query_returns_words(
+    storage: SQLiteHistoryStorage,
     dangerous_content: DangerousWordsContent,
 ) -> None:
     """инлайн-режим отдаёт случайные слова без учёта истории"""
     recording = RecordingSession()
     bot = make_bot(recording)
     dispatcher = Dispatcher()
-    dispatcher.include_router(create_inline_router(dangerous_content))
+    dispatcher.include_router(create_inline_router(dangerous_content, storage))
 
     query = InlineQuery.model_construct(
         id="iq-1",

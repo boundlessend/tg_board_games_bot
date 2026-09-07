@@ -41,6 +41,7 @@ from handlers.common import (
     ChatLocks,
     data_startswith,
     is_chat_manager,
+    is_not_modified,
     lookup_chat_session,
     make_chat_lock_middleware,
     make_chat_persist_middleware,
@@ -94,7 +95,7 @@ def create_group_session_router(
     locks = ChatLocks()
 
     async def _persist_chat(chat_id: int) -> None:
-        await _persist_chat_session(storage, sessions, chat_id)
+        await persist_chat_session(storage, sessions, chat_id)
 
     router.callback_query.middleware(make_chat_lock_middleware(locks))
     router.callback_query.middleware(
@@ -161,8 +162,9 @@ def create_group_session_router(
             # edit_menu отвечает пустым callback.answer, а тут нужен алерт
             try:
                 await message.edit_text(_render_lobby(session), reply_markup=keyboard)
-            except TelegramBadRequest:
-                pass
+            except TelegramBadRequest as error:
+                if not is_not_modified(error):
+                    raise
             await callback.answer(
                 "Прежняя партия снята, её счёт потерян.",
                 show_alert=True,
@@ -505,7 +507,7 @@ def _load_session(
     )
 
 
-async def _persist_chat_session(
+async def persist_chat_session(
     storage: SQLiteHistoryStorage,
     sessions: dict[int, GroupSession],
     chat_id: int,
@@ -660,6 +662,15 @@ def _start_timer(
     session.timer_task = asyncio.create_task(
         _run_timer(chat_id, session, bot, locks, persist, session.turn_epoch)
     )
+
+
+def cancel_session_timer(session: GroupSession) -> None:
+    """останавливает таймер партии снаружи роутера
+
+    нужна bot.py: партия, снятая вместе с чатом, иначе один раз выстрелит
+    таймером и напишет «время вышло» в чат, откуда бота уже выгнали
+    """
+    _cancel_timer(session)
 
 
 def _cancel_timer(session: GroupSession) -> None:

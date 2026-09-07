@@ -8,6 +8,8 @@ from database import DatabaseError, SQLiteHistoryStorage
 
 logger = logging.getLogger(__name__)
 
+PRIVATE_ONLY_TEXT = "Избранное личное: напиши эту команду мне в личку."
+
 
 def create_favorites_router(storage: SQLiteHistoryStorage) -> Router:
     """создаёт роутер избранного: /fav, /favorites, /favclear"""
@@ -16,6 +18,10 @@ def create_favorites_router(storage: SQLiteHistoryStorage) -> Router:
     @router.message(Command("fav"))
     async def handle_fav(message: Message) -> None:
         """добавляет последнее выданное слово в избранное"""
+        if message.chat.type != "private":
+            await message.answer(PRIVATE_ONLY_TEXT)
+            return
+
         user = message.from_user
         if user is None:
             return
@@ -42,6 +48,10 @@ def create_favorites_router(storage: SQLiteHistoryStorage) -> Router:
     @router.message(Command("favorites"))
     async def handle_favorites(message: Message) -> None:
         """показывает избранное пользователя"""
+        if message.chat.type != "private":
+            await message.answer(PRIVATE_ONLY_TEXT)
+            return
+
         user = message.from_user
         if user is None:
             return
@@ -65,6 +75,10 @@ def create_favorites_router(storage: SQLiteHistoryStorage) -> Router:
     @router.message(Command("favclear"))
     async def handle_favclear(message: Message) -> None:
         """очищает избранное пользователя"""
+        if message.chat.type != "private":
+            await message.answer(PRIVATE_ONLY_TEXT)
+            return
+
         user = message.from_user
         if user is None:
             return
