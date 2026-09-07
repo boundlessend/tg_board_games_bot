@@ -570,9 +570,7 @@ async def _deliver_word(
             "word_delivery_failed",
             extra={"game_id": session.game.game_id, "explainer_id": explainer_id},
         )
-        await callback.answer(
-            "Слово не дошло в ЛС. Попробуй ещё раз.", show_alert=True
-        )
+        await callback.answer("Слово не дошло в ЛС. Попробуй ещё раз.", show_alert=True)
         return False
     return True
 

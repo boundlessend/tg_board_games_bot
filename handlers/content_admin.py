@@ -316,8 +316,7 @@ def create_content_admin_router(
             return
         if (document.file_size or 0) > MAX_IMPORT_FILE_BYTES:
             await message.answer(
-                f"Файл больше {MAX_IMPORT_FILE_BYTES // 1024} КБ. "
-                "Разбей пак на части."
+                f"Файл больше {MAX_IMPORT_FILE_BYTES // 1024} КБ. Разбей пак на части."
             )
             return
 
