@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -19,7 +20,7 @@ from aiogram.types import (
 )
 
 from constants import TELEGRAM_MESSAGE_LIMIT
-from database import DatabaseError
+from database import DatabaseError, SQLiteHistoryStorage
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,44 @@ def _hard_wrap(line: str) -> list[str]:
 def is_not_modified(error: TelegramBadRequest) -> bool:
     """отличает штатный отказ telegram править неизменившееся сообщение"""
     return "message is not modified" in str(error).lower()
+
+
+async def persist_session[S](
+    storage: SQLiteHistoryStorage,
+    scope: str,
+    key: str,
+    session: S | None,
+    dump: Callable[[S], dict[str, Any]],
+) -> None:
+    """пишет снапшот сессии в scope, а если сессии больше нет - удаляет строку"""
+    if session is None:
+        await storage.delete_session(scope, key)
+        return
+    await storage.save_session(scope, key, json.dumps(dump(session)))
+
+
+async def restore_sessions[K, S](
+    storage: SQLiteHistoryStorage,
+    scope: str,
+    parse_key: Callable[[str], K],
+    load: Callable[[dict[str, Any]], S | None],
+) -> dict[K, S]:
+    """читает снапшоты scope, пропуская повреждённые и несовместимые"""
+    restored: dict[K, S] = {}
+    for key, data in (await storage.load_session_scope(scope)).items():
+        try:
+            session = load(json.loads(data))
+            parsed_key = parse_key(key)
+        except (KeyError, ValueError, TypeError, json.JSONDecodeError):
+            # снапшот несовместимой/повреждённой схемы - пропускаем
+            logger.exception(
+                "session_restore_failed",
+                extra={"scope": scope, "key": key},
+            )
+            continue
+        if session is not None:
+            restored[parsed_key] = session
+    return restored
 
 
 def make_chat_persist_middleware(

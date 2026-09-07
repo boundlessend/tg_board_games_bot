@@ -1,5 +1,6 @@
 """проверки хранилища: выдачи без повторов, контент, аналитика, бэкапы"""
 
+import asyncio
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -60,6 +61,48 @@ async def test_words_are_issued_without_repeats(
     await storage.reset_user_game_words(USER, "tg")
     _, restarted = await _select(storage, ["a", "b"])
     assert restarted == 1
+
+
+async def test_concurrent_selection_reacts_to_duplicate(
+    storage: SQLiteHistoryStorage,
+) -> None:
+    """гонка двух выдач одному человеку: проигравший перевыбирает, а не падает
+
+    барьер держит обе выдачи на чтении истории, пока каждая её не прочитала:
+    так обе видят один и тот же свободный элемент и вторая упирается в
+    DuplicateHistoryItemError на сохранении
+    """
+    await storage.save_user_game_word(USER, "race", "занято")
+    both_read = asyncio.Barrier(2)
+
+    async def get_seen(user_id: int) -> set[str]:
+        seen = await storage.get_user_game_words(user_id, "race")
+        if len(seen) < 2:
+            # ждём напарника с потолком: если порядок чтения и записи сломают,
+            # барьер без таймаута подвесил бы прогон навсегда
+            await asyncio.wait_for(both_read.wait(), 5)
+        return seen
+
+    async def save_seen(user_id: int, word: str) -> None:
+        await storage.save_user_game_word(user_id, "race", word)
+
+    async def select() -> tuple[str, int]:
+        return await select_unique_item(
+            items=["занято", "свободно"],
+            get_item_id=identity,
+            get_seen_ids=get_seen,
+            save_seen_id=save_seen,
+            telegram_id=USER,
+        )
+
+    results = await asyncio.gather(select(), select(), return_exceptions=True)
+    winners = [result for result in results if not isinstance(result, BaseException)]
+    losers = [result for result in results if isinstance(result, BaseException)]
+
+    assert winners == [("свободно", 2)]
+    # пул кончился на повторном заходе: проигравшему нечего выдавать
+    assert [type(error) for error in losers] == [EmptyPoolError]
+    assert await storage.get_user_game_words(USER, "race") == {"занято", "свободно"}
 
 
 async def test_custom_content_roundtrip(storage: SQLiteHistoryStorage) -> None:

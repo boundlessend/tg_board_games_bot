@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -45,6 +44,8 @@ from handlers.common import (
     lookup_chat_session,
     make_chat_lock_middleware,
     make_chat_persist_middleware,
+    persist_session,
+    restore_sessions,
     send_with_retry,
 )
 from handlers.ui import edit_menu
@@ -60,7 +61,7 @@ from services.picking import pick_word
 logger = logging.getLogger(__name__)
 
 _SCOPE = "group"
-_STALE_MESSAGE = "Это сообщение устарело, откройте меню заново."
+_STALE_MESSAGE = "Это сообщение устарело, открой меню заново."
 
 
 @dataclass
@@ -272,7 +273,7 @@ def create_group_session_router(
         ]
         if empty:
             await callback.answer(
-                "Без игроков: " + ", ".join(empty) + ". Наберите людей "
+                "Без игроков: " + ", ".join(empty) + ". Набери людей "
                 "или уменьшите число команд.",
                 show_alert=True,
             )
@@ -513,11 +514,9 @@ async def persist_chat_session(
     chat_id: int,
 ) -> None:
     """сохраняет или удаляет снапшот сессии одного чата"""
-    session = sessions.get(chat_id)
-    if session is None:
-        await storage.delete_session(_SCOPE, str(chat_id))
-        return
-    await storage.save_session(_SCOPE, str(chat_id), json.dumps(_dump_session(session)))
+    await persist_session(
+        storage, _SCOPE, str(chat_id), sessions.get(chat_id), _dump_session
+    )
 
 
 async def restore_group_sessions(
@@ -527,19 +526,11 @@ async def restore_group_sessions(
 ) -> None:
     """наполняет словарь сессий снапшотами из хранилища при старте"""
     games_by_id = {game.game_id: game for game in word_games}
-    raw = await storage.load_session_scope(_SCOPE)
-    for key, data in raw.items():
-        try:
-            session = _load_session(json.loads(data), games_by_id)
-        except (KeyError, ValueError, TypeError, json.JSONDecodeError):
-            # снапшот несовместимой/повреждённой схемы - пропускаем
-            logger.exception(
-                "session_restore_failed",
-                extra={"scope": _SCOPE, "key": key},
-            )
-            continue
-        if session is not None:
-            sessions[int(key)] = session
+    sessions.update(
+        await restore_sessions(
+            storage, _SCOPE, int, lambda data: _load_session(data, games_by_id)
+        )
+    )
 
 
 async def _deliver_word(
@@ -553,11 +544,11 @@ async def _deliver_word(
         custom = await storage.get_custom_words(session.game.game_id)
     except DatabaseError:
         logger.exception("database_error", extra={"action": "gs_word"})
-        await callback.answer("Ошибка БД. Попробуйте позже.", show_alert=True)
+        await callback.answer("Ошибка БД. Попробуй позже.", show_alert=True)
         return False
 
     pool = list(dict.fromkeys(session.game.words + custom))
-    word = pick_word(pool, session.issued)
+    word, session.issued = pick_word(pool, session.issued)
 
     bot = callback.bot
     if bot is None:
@@ -580,7 +571,7 @@ async def _deliver_word(
             extra={"game_id": session.game.game_id, "explainer_id": explainer_id},
         )
         await callback.answer(
-            "Слово не дошло в ЛС. Попробуйте ещё раз.", show_alert=True
+            "Слово не дошло в ЛС. Попробуй ещё раз.", show_alert=True
         )
         return False
     return True

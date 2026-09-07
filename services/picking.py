@@ -49,31 +49,26 @@ async def select_unique_item[T](
 
 def pick_unique[T](
     pool: list[T], issued: set[str], get_id: Callable[[T], str]
-) -> T | None:
+) -> tuple[T, set[str]] | None:
     """выбирает элемент без повтора в сессии, сбрасывая круг при исчерпании
 
-    осознанно мутирует issued: add при выдаче и clear при сбросе круга.
-    множество живёт в объекте групповой сессии, вызывающий код в
-    handlers/dangerous_group.py и handlers/group_session.py рассчитывает,
-    что после вызова оно уже обновлено; побочный эффект в том, что сброс
-    круга вызывающему не виден
+    возвращает пару (элемент, новое множество выданных): вызывающий сам
+    кладёт множество в свою сессию, поэтому сброс круга ему виден, а
+    переданное множество остаётся нетронутым
     """
     if len(pool) == 0:
         return None
     available = [item for item in pool if get_id(item) not in issued]
     if len(available) == 0:
-        issued.clear()
+        # круг пройден целиком: начинаем новый с полным пулом
         available = list(pool)
+        issued = set()
     chosen = random.choice(available)
-    issued.add(get_id(chosen))
-    return chosen
+    return chosen, issued | {get_id(chosen)}
 
 
-def pick_word(pool: list[str], issued: set[str]) -> str:
-    """выбирает слово без повтора в сессии (пул считается непустым)
-
-    как и pick_unique, мутирует issued
-    """
+def pick_word(pool: list[str], issued: set[str]) -> tuple[str, set[str]]:
+    """выбирает слово без повтора в сессии (пул считается непустым)"""
     chosen = pick_unique(pool, issued, identity)
     if chosen is None:
         raise ValueError("пул слов пуст")

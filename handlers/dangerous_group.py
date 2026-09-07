@@ -1,4 +1,3 @@
-import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -33,6 +32,8 @@ from handlers.common import (
     lookup_chat_session,
     make_chat_lock_middleware,
     make_chat_persist_middleware,
+    persist_session,
+    restore_sessions,
 )
 from keyboards import (
     create_dangerous_group_keyboard,
@@ -182,16 +183,16 @@ def create_dangerous_group_router(
                 )
             except DatabaseError:
                 logger.exception("database_error", extra={"action": "dg_word"})
-                await callback.answer("Ошибка БД. Попробуйте позже.", show_alert=True)
+                await callback.answer("Ошибка БД. Попробуй позже.", show_alert=True)
                 return
-            word = pick_word(pool, session.issued_words)
+            word, session.issued_words = pick_word(pool, session.issued_words)
         else:
             word = issued
         try:
             await bot.send_message(
                 callback.from_user.id,
                 f"Слово {team_label(team)}: {word}\n"
-                "Напишите запретные слова, затем «отправить».",
+                "Напиши запретные слова, затем «отправить».",
             )
         except TelegramForbiddenError:
             if issued is None:
@@ -515,13 +516,14 @@ async def _draw_curse(
         pool = content.curses + await storage.get_custom_curses()
     except DatabaseError:
         logger.exception("database_error", extra={"action": "dg_curse"})
-        await callback.answer("Ошибка БД. Попробуйте позже.", show_alert=True)
+        await callback.answer("Ошибка БД. Попробуй позже.", show_alert=True)
         return None
 
-    curse = pick_unique(pool, session.issued_curses, lambda c: c.id)
-    if curse is None:
+    drawn = pick_unique(pool, session.issued_curses, lambda c: c.id)
+    if drawn is None:
         await callback.answer("Проклятий нет.", show_alert=True)
         return None
+    curse, session.issued_curses = drawn
     session.pending_curse_id = curse.id
     return curse
 
@@ -537,13 +539,14 @@ async def _draw_boss(
         pool = content.bosses + await storage.get_custom_bosses()
     except DatabaseError:
         logger.exception("database_error", extra={"action": "dg_boss"})
-        await callback.answer("Ошибка БД. Попробуйте позже.", show_alert=True)
+        await callback.answer("Ошибка БД. Попробуй позже.", show_alert=True)
         return None
 
-    boss = pick_unique(pool, session.issued_bosses, lambda b: b.id)
-    if boss is None:
+    drawn = pick_unique(pool, session.issued_bosses, lambda b: b.id)
+    if drawn is None:
         await callback.answer("Боссов нет.", show_alert=True)
         return None
+    boss, session.issued_bosses = drawn
     session.pending_boss_id = boss.id
     return boss
 
@@ -645,27 +648,16 @@ async def persist_chat_session(
     chat_id: int,
 ) -> None:
     """сохраняет или удаляет снапшот партии одного чата"""
-    session = sessions.get(chat_id)
-    if session is None:
-        await storage.delete_session(_SCOPE, str(chat_id))
-        return
-    await storage.save_session(_SCOPE, str(chat_id), json.dumps(_dump_session(session)))
+    await persist_session(
+        storage, _SCOPE, str(chat_id), sessions.get(chat_id), _dump_session
+    )
 
 
 async def restore_dangerous_sessions(
     storage: SQLiteHistoryStorage, sessions: dict[int, DangerousGroup]
 ) -> None:
     """наполняет словарь партий снапшотами из хранилища при старте"""
-    raw = await storage.load_session_scope(_SCOPE)
-    for key, data in raw.items():
-        try:
-            sessions[int(key)] = _load_session(json.loads(data))
-        except (KeyError, ValueError, TypeError, json.JSONDecodeError):
-            # снапшот несовместимой/повреждённой схемы - пропускаем
-            logger.exception(
-                "session_restore_failed",
-                extra={"scope": _SCOPE, "key": key},
-            )
+    sessions.update(await restore_sessions(storage, _SCOPE, int, _load_session))
 
 
 async def _edit_board(callback: CallbackQuery, session: DangerousGroup) -> None:

@@ -10,7 +10,7 @@ from typing import Any
 
 from aiogram import Bot
 from aiogram.client.session.base import BaseSession
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.methods import TelegramMethod
 from aiogram.methods.base import TelegramType
 from aiogram.types import (
@@ -34,6 +34,8 @@ class RecordingSession(BaseSession):
         super().__init__()
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.blocked_users: set[int] = set()
+        # чат не 403, а «chat not found»: личка не заведена, а не заблокирована
+        self.missing_chats: set[int] = set()
         self._next_message_id = 1000
 
     def sent_to(self, chat_id: int) -> list[str]:
@@ -75,6 +77,8 @@ class RecordingSession(BaseSession):
             raise TelegramForbiddenError(
                 method=method, message="bot was blocked by the user"
             )
+        if name == "SendMessage" and payload.get("chat_id") in self.missing_chats:
+            raise TelegramBadRequest(method=method, message="chat not found")
         if name == "GetMe":
             return _bot_user()  # type: ignore[return-value]
         if name in {"SendMessage", "EditMessageText", "SendDocument"}:

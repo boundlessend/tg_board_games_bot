@@ -1,6 +1,7 @@
 """личный чат: словесная игра, избранное, настройки, меню и инлайн"""
 
 from datetime import datetime
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 from aiogram.types import (
@@ -88,6 +89,24 @@ async def test_word_game_issues_words_and_resets(
 
     await _press(dispatcher, bot, CB_WG_RESET_PREFIX + "whoami")
     assert await storage.get_user_game_words(USER, "whoami") == set()
+
+
+async def test_word_game_reports_database_failure(
+    tmp_path: Path, word_games: list[WordGame]
+) -> None:
+    """недоступная база оборачивается понятным ответом, а не летит наружу"""
+    recording = RecordingSession()
+    bot = make_bot(recording)
+    dispatcher = Dispatcher()
+    # хранилище без initialize: таблиц нет, любой запрос поднимает DatabaseError
+    broken = SQLiteHistoryStorage(tmp_path / "broken.sqlite3")
+    dispatcher.include_router(create_word_games_router(word_games, broken))
+
+    await _press(dispatcher, bot, CB_WG_WORD_PREFIX + "whoami")
+
+    assert recording.alerts() == ["Не удалось выдать слово. Попробуй позже."]
+    assert recording.sent_to(USER) == []
+    await broken.dispose()
 
 
 async def test_unknown_game_is_ignored(

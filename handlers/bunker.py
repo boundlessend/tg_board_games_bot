@@ -1,4 +1,3 @@
-import json
 import logging
 import random
 
@@ -48,6 +47,8 @@ from handlers.common import (
     is_chat_manager,
     lookup_chat_session,
     make_chat_lock_middleware,
+    persist_session,
+    restore_sessions,
     send_with_retry,
 )
 from keyboards import create_bunker_solo_lobby_keyboard
@@ -108,12 +109,8 @@ def create_bunker_router(
     async def _save_session(chat_id: int) -> None:
         """точечно пишет снапшот партии одного чата"""
         try:
-            session = sessions.get(chat_id)
-            if session is None:
-                await storage.delete_session(_SCOPE, str(chat_id))
-                return
-            await storage.save_session(
-                _SCOPE, str(chat_id), json.dumps(dump_session(session))
+            await persist_session(
+                storage, _SCOPE, str(chat_id), sessions.get(chat_id), dump_session
             )
         except DatabaseError:
             logger.exception("session_persist_failed", extra={"scope": _SCOPE})
@@ -123,12 +120,8 @@ def create_bunker_router(
         if code is None:
             return
         try:
-            lobby = lobbies.get(code)
-            if lobby is None:
-                await storage.delete_session(_LOBBY_SCOPE, code)
-                return
-            await storage.save_session(
-                _LOBBY_SCOPE, code, json.dumps(dump_lobby(lobby))
+            await persist_session(
+                storage, _LOBBY_SCOPE, code, lobbies.get(code), dump_lobby
             )
         except DatabaseError:
             logger.exception("session_persist_failed", extra={"scope": _LOBBY_SCOPE})
@@ -777,26 +770,9 @@ async def restore_bunker_sessions(
     member_lobby: dict[int, str],
 ) -> None:
     """наполняет партии, лобби и индекс участников из хранилища при старте"""
-    raw_sessions = await storage.load_session_scope(_SCOPE)
-    for key, data in raw_sessions.items():
-        try:
-            sessions[int(key)] = load_session(json.loads(data))
-        except (KeyError, ValueError, TypeError, json.JSONDecodeError):
-            # снапшот несовместимой/повреждённой схемы - пропускаем
-            logger.exception(
-                "session_restore_failed",
-                extra={"scope": _SCOPE, "key": key},
-            )
-    raw_lobbies = await storage.load_session_scope(_LOBBY_SCOPE)
-    for key, data in raw_lobbies.items():
-        try:
-            lobby = load_lobby(json.loads(data))
-        except (KeyError, ValueError, TypeError, json.JSONDecodeError):
-            logger.exception(
-                "session_restore_failed",
-                extra={"scope": _LOBBY_SCOPE, "key": key},
-            )
-            continue
+    sessions.update(await restore_sessions(storage, _SCOPE, int, load_session))
+    restored = await restore_sessions(storage, _LOBBY_SCOPE, str, load_lobby)
+    for lobby in restored.values():
         lobbies[lobby.code] = lobby
         for member_id in lobby.members:
             member_lobby[member_id] = lobby.code

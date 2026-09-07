@@ -12,6 +12,7 @@ from aiogram.types import FSInputFile, Message
 from constants import (
     DANGEROUS_WORDS_GAME_ID,
     MAX_CONTENT_LEN,
+    MAX_CUSTOM_POOL_WORDS,
     MAX_IMPORT_FILE_BYTES,
 )
 from database import (
@@ -27,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 # предел пользовательского пула одной игры: весь пул вычитывается на каждую
 # выдачу слова, поэтому импорт паком не должен раздувать его безгранично
-MAX_CUSTOM_POOL_WORDS = 2000
 
 
 def create_content_admin_router(
@@ -208,7 +208,7 @@ def create_content_admin_router(
     async def handle_restore_hint(message: Message) -> None:
         """подсказывает формат восстановления базы"""
         await message.answer(
-            "Пришлите файл базы (.sqlite3) с подписью /restore.\n"
+            "Пришли файл базы (.sqlite3) с подписью /restore.\n"
             "Файл заменяется под живыми соединениями: запросы, которые "
             "выполняются в этот момент, завершатся ошибкой. Не делайте "
             "замену в разгар партии."
@@ -317,7 +317,7 @@ def create_content_admin_router(
         if (document.file_size or 0) > MAX_IMPORT_FILE_BYTES:
             await message.answer(
                 f"Файл больше {MAX_IMPORT_FILE_BYTES // 1024} КБ. "
-                "Разбейте пак на части."
+                "Разбей пак на части."
             )
             return
 

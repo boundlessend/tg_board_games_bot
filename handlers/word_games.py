@@ -72,7 +72,7 @@ def create_word_games_router(
                 extra={"telegram_id": telegram_id, "action": "wg_word"},
             )
             await callback.answer(
-                "Не удалось выдать слово. Попробуйте позже.", show_alert=True
+                "Не удалось выдать слово. Попробуй позже.", show_alert=True
             )
             return
 
@@ -98,7 +98,7 @@ def create_word_games_router(
                 extra={"telegram_id": telegram_id, "action": "wg_reset"},
             )
             await callback.answer(
-                "Не удалось сбросить. Попробуйте позже.", show_alert=True
+                "Не удалось сбросить. Попробуй позже.", show_alert=True
             )
             return
 

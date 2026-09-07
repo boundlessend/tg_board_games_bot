@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -25,6 +24,7 @@ from constants import SESSION_TTL_DAYS
 from database import DatabaseError, SQLiteHistoryStorage, iso_days_ago
 from handlers.admin import create_admin_router
 from handlers.bunker import create_bunker_router, restore_bunker_sessions
+from handlers.common import persist_session
 from handlers.content_admin import create_content_admin_router
 from handlers.dangerous_group import (
     DangerousGroup,
@@ -69,8 +69,8 @@ _Middleware = Callable[[_Handler, TelegramObject, dict[str, Any]], Awaitable[Any
 _BUNKER_SCOPE = "bunker"
 _BUNKER_LOBBY_SCOPE = "bunker_lobby"
 
-_ERROR_TEXT = "Что-то пошло не так. Попробуйте ещё раз."
-_THROTTLE_TEXT = "Слишком часто. Подождите секунду."
+ERROR_TEXT = "Что-то пошло не так. Попробуй ещё раз."
+_THROTTLE_TEXT = "Слишком часто. Подожди секунду."
 _THROTTLE_SECONDS = 0.4
 _THROTTLE_CACHE_LIMIT = 1000
 _TASKS_CONCURRENCY_LIMIT = 50
@@ -200,7 +200,7 @@ async def _run(
     dispatcher.include_router(
         create_dangerous_group_router(content, storage, dangerous_sessions)
     )
-    _register_error_handler(dispatcher, bot, config.admin_ids)
+    register_error_handler(dispatcher, bot, config.admin_ids)
     # хендлеры, прерванные отменой polling, могли не дойти до persist-middleware
     dispatcher.shutdown.register(
         partial(
@@ -382,21 +382,8 @@ async def _persist_chat(
     """пишет снапшоты всех игр одного чата: пропавшая партия удаляется"""
     await persist_group_session(storage, group_sessions, chat_id)
     await persist_dangerous_session(storage, dangerous_sessions, chat_id)
-    await _persist_bunker_session(storage, bunker_sessions, chat_id)
-
-
-async def _persist_bunker_session(
-    storage: SQLiteHistoryStorage,
-    sessions: dict[int, BunkerSession],
-    chat_id: int,
-) -> None:
-    """пишет или удаляет снапшот партии бункера"""
-    session = sessions.get(chat_id)
-    if session is None:
-        await storage.delete_session(_BUNKER_SCOPE, str(chat_id))
-        return
-    await storage.save_session(
-        _BUNKER_SCOPE, str(chat_id), json.dumps(dump_session(session))
+    await persist_session(
+        storage, _BUNKER_SCOPE, str(chat_id), bunker_sessions.get(chat_id), dump_session
     )
 
 
@@ -413,12 +400,12 @@ async def _save_snapshots(
             await persist_group_session(storage, group_sessions, chat_id)
         for chat_id in dangerous_sessions:
             await persist_dangerous_session(storage, dangerous_sessions, chat_id)
-        for chat_id in bunker_sessions:
-            await _persist_bunker_session(storage, bunker_sessions, chat_id)
-        for code, lobby in bunker_lobbies.items():
-            await storage.save_session(
-                _BUNKER_LOBBY_SCOPE, code, json.dumps(dump_lobby(lobby))
+        for chat_id, bunker in bunker_sessions.items():
+            await persist_session(
+                storage, _BUNKER_SCOPE, str(chat_id), bunker, dump_session
             )
+        for code, lobby in bunker_lobbies.items():
+            await persist_session(storage, _BUNKER_LOBBY_SCOPE, code, lobby, dump_lobby)
     except DatabaseError:
         logger.exception("shutdown_persist_failed")
 
@@ -473,7 +460,7 @@ async def _notify_admins(bot: Bot, admin_ids: frozenset[int], text: str) -> None
             logger.warning("admin_notify_failed", extra={"telegram_id": admin_id})
 
 
-def _register_error_handler(
+def register_error_handler(
     dispatcher: Dispatcher, bot: Bot, admin_ids: frozenset[int]
 ) -> None:
     """вешает общий обработчик: логирует сбой, отвечает игроку и будит админов"""
@@ -503,9 +490,9 @@ async def _reply_about_error(update: Update) -> None:
     message = update.message
     try:
         if isinstance(callback, CallbackQuery):
-            await callback.answer(_ERROR_TEXT, show_alert=True)
+            await callback.answer(ERROR_TEXT, show_alert=True)
         elif isinstance(message, Message):
-            await message.answer(_ERROR_TEXT)
+            await message.answer(ERROR_TEXT)
     except TelegramAPIError:
         logger.warning("error_reply_failed")
 

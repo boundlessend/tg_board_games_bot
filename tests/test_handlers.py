@@ -5,9 +5,10 @@
 в правах и переходах фаз
 """
 
+import asyncio
 from datetime import datetime
+from itertools import count
 
-import pytest
 from aiogram import Bot, Dispatcher
 from aiogram.types import (
     CallbackQuery,
@@ -24,7 +25,13 @@ from constants import (
     CB_DG_BOSS_DROP,
     CB_DG_BOSS_KEEP,
     CB_DG_BOSS_REROLL,
+    CB_DG_CURSE,
+    CB_DG_CURSE_KEEP,
+    CB_DG_CURSE_REROLL,
+    CB_DG_EXPLAIN_PREFIX,
     CB_DG_OPEN,
+    CB_DG_SEND_PREFIX,
+    CB_DG_WORD_PREFIX,
     CB_FORGET_ME_YES,
     CB_GS_CANCEL,
     CB_GS_FINISH,
@@ -32,12 +39,20 @@ from constants import (
     CB_GS_FINISH_YES,
     CB_GS_JOIN_PREFIX,
     CB_GS_NEW_PREFIX,
+    CB_GS_NEXT,
+    CB_GS_REROLL,
+    CB_GS_SCORE,
+    CB_GS_SKIP,
     CB_GS_START,
     CB_GS_WORD,
 )
 from database import SQLiteHistoryStorage
 from handlers.bunker import create_bunker_router
-from handlers.dangerous_group import DangerousGroup, create_dangerous_group_router
+from handlers.dangerous_group import (
+    DangerousGroup,
+    create_dangerous_group_router,
+    restore_dangerous_sessions,
+)
 from handlers.group_session import GroupSession, create_group_session_router
 from handlers.settings import create_settings_router
 from services.bunker import BunkerContent
@@ -55,22 +70,12 @@ HOST = 1
 PLAYER_TWO = 2
 STRANGER = 3
 
-_update_id = 0
-_message_id = 0
+_ids = count(1)
 
 
-def _next_update_id() -> int:
-    """выдаёт возрастающий номер апдейта"""
-    global _update_id
-    _update_id += 1
-    return _update_id
-
-
-def _next_message_id() -> int:
-    """выдаёт возрастающий номер сообщения"""
-    global _message_id
-    _message_id += 1
-    return _message_id
+def _next_id() -> int:
+    """выдаёт возрастающий номер апдейта или сообщения"""
+    return next(_ids)
 
 
 def _user(user_id: int) -> User:
@@ -81,7 +86,7 @@ def _user(user_id: int) -> User:
 def _message(chat_id: int, user_id: int, text: str) -> Message:
     """сообщение в чате нужного типа"""
     return Message.model_construct(
-        message_id=_next_message_id(),
+        message_id=_next_id(),
         date=datetime(2026, 1, 1),
         chat=Chat.model_construct(
             id=chat_id, type="private" if chat_id > 0 else "supergroup"
@@ -100,7 +105,7 @@ async def _press(
 ) -> None:
     """эмулирует нажатие inline-кнопки в чате"""
     callback = CallbackQuery.model_construct(
-        id=f"cb{_next_update_id()}",
+        id=f"cb{_next_id()}",
         from_user=_user(user_id),
         chat_instance="chat-instance",
         message=_message(chat_id, user_id, "табло"),
@@ -108,7 +113,7 @@ async def _press(
     )
     await dispatcher.feed_update(
         bot,
-        Update.model_construct(update_id=_next_update_id(), callback_query=callback),
+        Update.model_construct(update_id=_next_id(), callback_query=callback),
     )
 
 
@@ -119,17 +124,10 @@ async def _send(
     await dispatcher.feed_update(
         bot,
         Update.model_construct(
-            update_id=_next_update_id(),
+            update_id=_next_id(),
             message=_message(chat_id, user_id, text),
         ),
     )
-
-
-@pytest.fixture
-def session_pair() -> tuple[Dispatcher, RecordingSession]:
-    """диспетчер без роутеров и его записывающая сессия"""
-    recording = RecordingSession()
-    return Dispatcher(), recording
 
 
 async def _started_group_session(
@@ -231,6 +229,108 @@ async def test_wrong_team_cannot_take_word(
     assert any("чей ход" in alert for alert in recording.alerts())
 
 
+async def test_word_returns_to_pool_when_private_chat_is_missing(
+    storage: SQLiteHistoryStorage, word_games: list[WordGame]
+) -> None:
+    """личка не заведена («chat not found»), а не заблокирована: слово в пуле"""
+    dispatcher, bot, recording, sessions = await _started_group_session(
+        storage, word_games
+    )
+    recording.missing_chats.add(HOST)
+
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_GS_WORD)
+    assert sessions[GROUP_CHAT].issued == set()
+    assert sessions[GROUP_CHAT].explainer_id is None
+    assert any("не дошло" in alert for alert in recording.alerts())
+
+
+async def test_turn_scores_pass_and_reroll(
+    storage: SQLiteHistoryStorage, word_games: list[WordGame]
+) -> None:
+    """очко, передача хода, реролл со штрафом и пропуск без штрафа"""
+    dispatcher, bot, _, sessions = await _started_group_session(storage, word_games)
+    session = sessions[GROUP_CHAT]
+
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_GS_WORD)
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_GS_SCORE)
+    assert session.scores == [1, 0]
+    # слово отыграно: следующее берут кнопкой, а не автоматом
+    assert session.explainer_id is None
+
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_GS_NEXT)
+    assert session.current_team == 1
+    assert session.explainer_id is None
+
+    await _press(dispatcher, bot, GROUP_CHAT, PLAYER_TWO, CB_GS_WORD)
+    assert session.explainer_id == PLAYER_TWO
+    await _press(dispatcher, bot, GROUP_CHAT, PLAYER_TWO, CB_GS_REROLL)
+    assert session.scores == [1, -1]
+
+    issued_before = set(session.issued)
+    await _press(dispatcher, bot, GROUP_CHAT, PLAYER_TWO, CB_GS_SKIP)
+    assert session.scores == [1, -1]
+    assert session.issued > issued_before
+
+
+async def test_other_team_cannot_score(
+    storage: SQLiteHistoryStorage, word_games: list[WordGame]
+) -> None:
+    """очко ставит только игрок команды, чей сейчас ход"""
+    dispatcher, bot, recording, sessions = await _started_group_session(
+        storage, word_games
+    )
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_GS_WORD)
+
+    await _press(dispatcher, bot, GROUP_CHAT, PLAYER_TWO, CB_GS_SCORE)
+    assert sessions[GROUP_CHAT].scores == [0, 0]
+    assert any("чей ход" in alert for alert in recording.alerts())
+
+
+async def test_turn_timer_passes_the_turn(
+    storage: SQLiteHistoryStorage, word_games: list[WordGame]
+) -> None:
+    """истёкший таймер сам передаёт ход следующей команде"""
+    dispatcher, bot, recording, sessions = await _started_group_session(
+        storage, word_games
+    )
+    session = sessions[GROUP_CHAT]
+    session.turn_seconds = 1
+
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_GS_WORD)
+    timer = session.timer_task
+    assert timer is not None
+    await timer
+
+    assert session.current_team == 1
+    assert session.explainer_id is None
+    assert any("Время вышло" in text for text in recording.sent_to(GROUP_CHAT))
+
+
+async def test_manual_pass_disarms_the_timer(
+    storage: SQLiteHistoryStorage, word_games: list[WordGame]
+) -> None:
+    """ручная передача хода обесценивает эпоху: таймер не двигает ход второй раз"""
+    dispatcher, bot, recording, sessions = await _started_group_session(
+        storage, word_games
+    )
+    session = sessions[GROUP_CHAT]
+    session.turn_seconds = 1
+
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_GS_WORD)
+    timer = session.timer_task
+    assert timer is not None
+    epoch = session.turn_epoch
+
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_GS_NEXT)
+    assert session.current_team == 1
+    assert session.turn_epoch == epoch + 1
+    assert session.timer_task is None
+
+    await asyncio.gather(timer, return_exceptions=True)
+    assert session.current_team == 1
+    assert not any("Время вышло" in text for text in recording.sent_to(GROUP_CHAT))
+
+
 async def test_finish_asks_for_confirmation(
     storage: SQLiteHistoryStorage, word_games: list[WordGame]
 ) -> None:
@@ -326,8 +426,9 @@ async def test_boss_reroll_returns_previous_to_pool(
 
     await _press(dispatcher, bot, GROUP_CHAT, HOST, f"{CB_DG_BOSS_REROLL}:{first}")
     second = sessions[GROUP_CHAT].pending_boss_id
-    assert second != first
-    # отвергнутый босс снова доступен, занят только текущий
+    # отвергнутый босс снова доступен, занят только текущий. сравнивать
+    # second с first нельзя: он вернулся в пул и честно может выпасть снова
+    assert second is not None
     assert sessions[GROUP_CHAT].issued_bosses == {second}
 
 
@@ -379,6 +480,67 @@ async def test_only_host_or_admin_draws_boss(
 
     await _press(dispatcher, bot, GROUP_CHAT, CHAT_ADMIN_ID, CB_DG_BOSS)
     assert sessions[GROUP_CHAT].pending_boss_id is not None
+
+
+async def test_curse_reroll_returns_previous_to_pool(
+    storage: SQLiteHistoryStorage, dangerous_content: DangerousWordsContent
+) -> None:
+    """реролл возвращает отвергнутое проклятие в пул партии"""
+    dispatcher, bot, _, sessions = await _dangerous_game(storage, dangerous_content)
+
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_DG_CURSE)
+    first = sessions[GROUP_CHAT].pending_curse_id
+    assert sessions[GROUP_CHAT].issued_curses == {first}
+
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, f"{CB_DG_CURSE_REROLL}:{first}")
+    second = sessions[GROUP_CHAT].pending_curse_id
+    # отвергнутое вернулось в пул, занято только текущее: реролл вправе
+    # выдать ту же карту заново, поэтому сравнения id тут нет
+    assert sessions[GROUP_CHAT].issued_curses == {second}
+
+
+async def test_stale_curse_offer_is_ignored(
+    storage: SQLiteHistoryStorage, dangerous_content: DangerousWordsContent
+) -> None:
+    """кнопки старого предложения мертвы: принимается только текущая карта"""
+    dispatcher, bot, recording, sessions = await _dangerous_game(
+        storage, dangerous_content
+    )
+
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_DG_CURSE)
+    first = sessions[GROUP_CHAT].pending_curse_id
+    # второе предложение вытесняет первое: выданное не повторяется, id разные
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_DG_CURSE)
+    second = sessions[GROUP_CHAT].pending_curse_id
+    assert second != first
+
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, f"{CB_DG_CURSE_KEEP}:{first}")
+    assert sessions[GROUP_CHAT].pending_curse_id == second
+    assert any("устарело" in alert for alert in recording.alerts())
+
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, f"{CB_DG_CURSE_KEEP}:{second}")
+    assert sessions[GROUP_CHAT].pending_curse_id is None
+
+
+async def test_dangerous_game_survives_restart(
+    storage: SQLiteHistoryStorage, dangerous_content: DangerousWordsContent
+) -> None:
+    """снапшот партии восстанавливает слово, объясняющего и его держателя"""
+    dispatcher, bot, _, sessions = await _dangerous_game(storage, dangerous_content)
+
+    await _press(dispatcher, bot, GROUP_CHAT, PLAYER_TWO, CB_DG_EXPLAIN_PREFIX + "0")
+    await _press(dispatcher, bot, GROUP_CHAT, STRANGER, CB_DG_WORD_PREFIX + "0")
+    await _press(dispatcher, bot, GROUP_CHAT, STRANGER, CB_DG_SEND_PREFIX + "0")
+
+    restored: dict[int, DangerousGroup] = {}
+    await restore_dangerous_sessions(storage, restored)
+
+    session = restored[GROUP_CHAT]
+    assert session.words[0] == sessions[GROUP_CHAT].words[0]
+    assert session.issued_words == sessions[GROUP_CHAT].issued_words
+    assert session.explainer_ids[0] == PLAYER_TWO
+    assert session.word_holder_ids[0] == STRANGER
+    assert session.sent[0] is True
 
 
 async def test_bunker_lobby_marks_unreachable_players(

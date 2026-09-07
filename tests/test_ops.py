@@ -1,16 +1,26 @@
-"""эксплуатационная обвязка: бэкапы с ротацией, heartbeat, формат логов"""
+"""эксплуатационная обвязка: бэкапы с ротацией, heartbeat, логи, рантайм"""
 
+import asyncio
 import json
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
+from aiogram import Dispatcher, Router
+from aiogram.types import Chat, Message, Update, User
 
+from bot import ERROR_TEXT, register_error_handler
+from constants import TELEGRAM_MESSAGE_LIMIT
 from database import SQLiteHistoryStorage
+from handlers.common import ChatLocks, split_report
 from health import is_alive, touch_heartbeat
 from logging_setup import StructuredFormatter
 from scripts.backup import make_backup, prune_backups
+from tests.fake_bot import RecordingSession, make_bot
+
+USER = 91
 
 
 async def test_backup_creates_snapshot_and_rotates(tmp_path: Path) -> None:
@@ -21,8 +31,16 @@ async def test_backup_creates_snapshot_and_rotates(tmp_path: Path) -> None:
 
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
+    # снимки прошлых прогонов: имя со штампом времени сортируется по возрасту
+    old_names = [f"bot-2020010{index}T000000Z.sqlite3" for index in range(1, 4)]
+    for name in old_names:
+        (backup_dir / name).write_bytes(b"x")
+
     snapshot = await make_backup(storage, backup_dir, keep=3)
     assert snapshot is not None and snapshot.exists()
+
+    remaining = sorted(path.name for path in backup_dir.glob("bot-*.sqlite3"))
+    assert remaining == sorted(old_names[1:] + [snapshot.name])
 
     restored = SQLiteHistoryStorage(snapshot)
     assert await restored.get_user_game_words(1, "alias") == {"слово"}
@@ -115,3 +133,71 @@ def test_heartbeat_timestamp_moves_forward(tmp_path: Path) -> None:
     time.sleep(0.01)
     touch_heartbeat(path)
     assert float(path.read_text(encoding="utf-8")) > first
+
+
+async def test_chat_locks_serialize_one_chat_only() -> None:
+    """события одного чата идут по очереди, разные чаты друг друга не ждут"""
+    locks = ChatLocks()
+    trace: list[str] = []
+
+    async def work(chat_id: int, tag: str) -> None:
+        async with locks.hold(chat_id):
+            trace.append(f"{tag}-вошёл")
+            await asyncio.sleep(0)
+            trace.append(f"{tag}-вышел")
+
+    await asyncio.gather(work(-100, "первый"), work(-100, "второй"))
+    assert trace == ["первый-вошёл", "первый-вышел", "второй-вошёл", "второй-вышел"]
+    assert len(locks) == 0
+
+    trace.clear()
+    await asyncio.gather(work(-100, "первый"), work(-200, "второй"))
+    assert trace[:2] == ["первый-вошёл", "второй-вошёл"]
+    assert len(locks) == 0
+
+
+def test_split_report_respects_telegram_limit() -> None:
+    """строка ровно в лимит цела, длиннее - режется, короткие склеиваются"""
+    exact = "я" * TELEGRAM_MESSAGE_LIMIT
+    assert split_report(exact) == [exact]
+
+    long_line = "я" * (TELEGRAM_MESSAGE_LIMIT + 10)
+    pieces = split_report(long_line)
+    assert [len(piece) for piece in pieces] == [TELEGRAM_MESSAGE_LIMIT, 10]
+    assert "".join(pieces) == long_line
+
+    assert split_report("раз\nдва\nтри") == ["раз\nдва\nтри"]
+
+    half = "я" * (TELEGRAM_MESSAGE_LIMIT // 2)
+    chunks = split_report(f"{half}\n{half}")
+    assert len(chunks) == 2
+    assert all(len(chunk) <= TELEGRAM_MESSAGE_LIMIT for chunk in chunks)
+
+
+async def test_error_handler_answers_the_user() -> None:
+    """падение хендлера превращается в понятный ответ, а не в тишину"""
+    recording = RecordingSession()
+    bot = make_bot(recording)
+    dispatcher = Dispatcher()
+    router = Router()
+
+    @router.message()
+    async def handle_and_fail(message: Message) -> None:
+        """хендлер, который падает при любом сообщении"""
+        raise RuntimeError("сбой внутри хендлера")
+
+    dispatcher.include_router(router)
+    register_error_handler(dispatcher, bot, frozenset())
+
+    message = Message.model_construct(
+        message_id=1,
+        date=datetime(2026, 1, 1),
+        chat=Chat.model_construct(id=USER, type="private"),
+        from_user=User.model_construct(id=USER, is_bot=False, first_name="Ю"),
+        text="/start",
+    )
+    await dispatcher.feed_update(
+        bot, Update.model_construct(update_id=1, message=message)
+    )
+
+    assert recording.sent_to(USER) == [ERROR_TEXT]

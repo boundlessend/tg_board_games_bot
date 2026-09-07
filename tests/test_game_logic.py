@@ -106,15 +106,18 @@ def test_story_finale_kills_everyone_on_catastrophe(
     assert story_survivors(session) == []
 
 
-def test_lobby_codes_are_unique_and_case_insensitive() -> None:
-    """код лобби не повторяется и вводится в любом регистре"""
-    taken = {generate_code(set()) for _ in range(50)}
-    assert len(taken) > 40
-    for code in taken:
+def test_lobby_codes_avoid_taken_and_confusing_symbols() -> None:
+    """новый код не совпадает с занятыми, в алфавите нет похожих символов"""
+    taken: set[str] = set()
+    for _ in range(50):
+        code = generate_code(taken)
+        assert code not in taken
         assert len(code) == 6
-        assert "0" not in code and "O" not in code
+        # 0/O и 1/I неразличимы на слух и в шрифте: их в алфавите быть не должно
+        assert set(code).isdisjoint("01OI")
+        taken.add(code)
 
-    code = generate_code(set())
+    code = generate_code(taken)
     assert normalize_code(f"  {code.lower()} ") == code
 
 
@@ -153,11 +156,13 @@ def test_drop_lobby_clears_registries() -> None:
 def test_pick_word_cycles_pool() -> None:
     """слова сессии не повторяются, пока пул не исчерпан"""
     issued: set[str] = set()
-    first = pick_word(["a", "b"], issued)
-    second = pick_word(["a", "b"], issued)
+    first, issued = pick_word(["a", "b"], issued)
+    second, issued = pick_word(["a", "b"], issued)
     assert {first, second} == {"a", "b"}
-    # круг замкнулся: выбор снова доступен из полного пула
-    assert pick_word(["a", "b"], issued) in {"a", "b"}
+    # круг замкнулся: выбор снова доступен из полного пула, счёт с нуля
+    third, issued = pick_word(["a", "b"], issued)
+    assert third in {"a", "b"}
+    assert issued == {third}
 
 
 def test_pick_unique_on_empty_pool() -> None:

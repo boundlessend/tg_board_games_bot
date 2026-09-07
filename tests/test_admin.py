@@ -4,6 +4,7 @@ from datetime import datetime
 
 from aiogram import Bot, Dispatcher
 from aiogram.types import (
+    BufferedInputFile,
     CallbackQuery,
     Chat,
     Document,
@@ -14,7 +15,7 @@ from aiogram.types import (
 
 from constants import CB_ADMIN_ACTIVITY, CB_ADMIN_CSV, CB_ADMIN_STATS
 from database import SQLiteHistoryStorage
-from handlers.admin import create_admin_router
+from handlers.admin import CSV_CAPTION, ID_WARNING, create_admin_router
 from handlers.content_admin import (
     _parse_pair,
     _parse_words_pack,
@@ -66,6 +67,16 @@ async def _press(dispatcher: Dispatcher, bot: Bot, user_id: int, data: str) -> N
     await dispatcher.feed_update(
         bot, Update.model_construct(update_id=2, callback_query=callback)
     )
+
+
+def _last_document(recording: RecordingSession) -> tuple[str, str]:
+    """возвращает содержимое и подпись последнего отправленного документа"""
+    name, payload = next(
+        call for call in reversed(recording.calls) if call[0] == "SendDocument"
+    )
+    document = payload["document"]
+    assert isinstance(document, BufferedInputFile)
+    return document.data.decode("utf-8"), str(payload["caption"])
 
 
 def _admin_dispatcher(
@@ -132,19 +143,27 @@ async def test_summary_counts_every_kind_of_issue(
     assert "альфа x2" in summary
 
 
-async def test_full_report_is_sent_as_a_file(
+async def test_full_report_counts_words_per_game(
     storage: SQLiteHistoryStorage,
     dangerous_content: DangerousWordsContent,
     word_games: list[WordGame],
 ) -> None:
-    """подробный отчёт уходит документом, а не серией сообщений"""
+    """подробный отчёт уходит документом со счётчиками по играм"""
     recording = RecordingSession()
     bot = make_bot(recording)
     dispatcher = _admin_dispatcher(storage, word_games)
     await storage.save_user_game_word(1, "alias", "альфа")
+    await storage.save_user_game_word(1, "crocodile", "бета")
 
     await _press(dispatcher, bot, ADMIN, CB_ADMIN_STATS)
-    assert "SendDocument" in recording.method_names()
+    report, caption = _last_document(recording)
+
+    alias_pool = next(game for game in word_games if game.game_id == "alias").words
+    assert "Статистика пользователя 1" in report
+    assert f"alias: 1/{len(alias_pool)}" in report
+    assert "crocodile: 1/" in report
+    assert "альфа" in report and "бета" in report
+    assert caption == f"Полный отчёт: пользователей 1.\n{ID_WARNING}"
     assert recording.sent_to(ADMIN) == []
 
 
@@ -153,14 +172,23 @@ async def test_csv_and_activity_reports(
     dangerous_content: DangerousWordsContent,
     word_games: list[WordGame],
 ) -> None:
-    """csv отдаётся файлом, активность - текстом"""
+    """csv отдаётся файлом с заголовком и строкой на игру, активность - текстом"""
     recording = RecordingSession()
     bot = make_bot(recording)
     dispatcher = _admin_dispatcher(storage, word_games)
     await storage.save_user_game_word(1, "alias", "альфа")
+    await storage.save_user_game_word(1, "alias", "гамма")
+    await storage.save_user_game_word(2, "crocodile", "бета")
 
     await _press(dispatcher, bot, ADMIN, CB_ADMIN_CSV)
-    assert "SendDocument" in recording.method_names()
+    csv, caption = _last_document(recording)
+
+    assert csv.splitlines() == [
+        "telegram_id,game_id,words",
+        "1,alias,2",
+        "2,crocodile,1",
+    ]
+    assert caption == CSV_CAPTION
 
     await _press(dispatcher, bot, ADMIN, CB_ADMIN_ACTIVITY)
     assert "Выдачи по дням" in recording.sent_to(ADMIN)[-1]

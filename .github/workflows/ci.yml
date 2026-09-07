@@ -33,7 +33,7 @@ jobs:
         run: mypy .
 
       - name: Tests
-        run: pytest --cov=. --cov-report=term-missing --cov-fail-under=60
+        run: pytest --cov=. --cov-report=term-missing --cov-fail-under=65
 
       - name: Audit dependencies
         run: |

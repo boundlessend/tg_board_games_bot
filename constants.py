@@ -130,6 +130,8 @@ DG_DROP_TITLE = "Убрать"
 
 TELEGRAM_MESSAGE_LIMIT = 3500
 MAX_CONTENT_LEN = 500
+# предел пользовательского пула одной игры: пул целиком читается на каждую выдачу
+MAX_CUSTOM_POOL_WORDS = 2000
 
 CB_FORGET_ME_YES = "me:forget_yes"
 CB_FORGET_ME_NO = "me:forget_no"
