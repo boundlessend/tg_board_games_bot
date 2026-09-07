@@ -114,17 +114,13 @@ async def test_delete_user_data_removes_every_trace(
     storage: SQLiteHistoryStorage,
 ) -> None:
     """forgetme стирает историю, избранное и настройки пользователя"""
-    await storage.save_user_word(USER, "слово")
-    await storage.save_user_curse(USER, "c1")
-    await storage.save_user_boss(USER, "b1")
     await storage.save_user_game_word(USER, "alias", "игровое")
     await storage.add_favorite(USER, "любимое")
     await storage.set_user_auto_cycle(USER, False)
     await storage.set_last_word(USER, "последнее")
 
     removed = await storage.delete_user_data(USER)
-    assert removed == 7
-    assert await storage.count_user_words(USER) == 0
+    assert removed == 4
     assert await storage.get_favorites(USER) == []
     assert await storage.get_last_word(USER) is None
     assert await storage.get_user_auto_cycle(USER) is True
@@ -132,23 +128,20 @@ async def test_delete_user_data_removes_every_trace(
 
 
 async def test_summary_and_activity(storage: SQLiteHistoryStorage) -> None:
-    """сводка считает все виды выдач, активность бьётся по дням"""
-    await storage.save_user_word(1, "альфа")
-    await storage.save_user_word(2, "альфа")
-    await storage.save_user_curse(1, "c1")
-    await storage.save_user_boss(1, "b1")
-    await storage.save_user_game_word(1, "alias", "игровое")
+    """сводка считает выдачи словесных игр, активность бьётся по дням"""
+    await storage.save_user_game_word(1, "alias", "альфа")
+    await storage.save_user_game_word(2, "alias", "альфа")
+    await storage.save_user_game_word(1, "crocodile", "бета")
 
     totals = await storage.get_summary_totals()
     assert totals.users == 2
-    assert totals.dangerous_words == 2
-    assert (totals.curses, totals.bosses, totals.game_words) == (1, 1, 1)
+    assert totals.game_words == 3
 
-    assert (await storage.get_top_words(10))[0] == ("альфа", 2)
-    assert await storage.count_issuances_since(iso_days_ago(1)) == 5
+    assert (await storage.get_top_game_words(10))[0] == ("альфа", 2)
+    assert await storage.count_issuances_since(iso_days_ago(1)) == 3
     assert await storage.count_active_users_since(iso_days_ago(1)) == 2
     by_day = await storage.issuances_by_day(iso_days_ago(1))
-    assert by_day and by_day[-1][1] == 5
+    assert by_day and by_day[-1][1] == 3
     assert await storage.count_issuances_since("9999-01-01T00:00:00+00:00") == 0
 
 
@@ -163,7 +156,8 @@ async def test_sessions_are_saved_and_expire(
     assert await storage.delete_stale_sessions("9999-01-01T00:00:00+00:00") == 1
     assert await storage.load_session_scope("group") == {}
 
-    await storage.replace_session_scope("bunker", {"a": "{}", "b": "{}"})
+    await storage.save_session("bunker", "a", "{}")
+    await storage.save_session("bunker", "b", "{}")
     assert set(await storage.load_session_scope("bunker")) == {"a", "b"}
     await storage.delete_session("bunker", "a")
     assert set(await storage.load_session_scope("bunker")) == {"b"}
@@ -173,11 +167,11 @@ async def test_backup_snapshot_and_restore(tmp_path: Path) -> None:
     """снимок базы переносит данные и проверяется по схеме"""
     source = SQLiteHistoryStorage(tmp_path / "a.sqlite3")
     await source.initialize()
-    await source.save_user_word(1, "из_a")
+    await source.save_user_game_word(1, "alias", "из_a")
 
     donor = SQLiteHistoryStorage(tmp_path / "b.sqlite3")
     await donor.initialize()
-    await donor.save_user_word(2, "из_b")
+    await donor.save_user_game_word(2, "alias", "из_b")
     # живая WAL-база не копируется файлом - источник только снимок VACUUM INTO
     snapshot = tmp_path / "snapshot.sqlite3"
     await donor.backup_snapshot(snapshot)
@@ -188,8 +182,8 @@ async def test_backup_snapshot_and_restore(tmp_path: Path) -> None:
     assert snapshot_has_core_tables(foreign) is False
 
     await source.replace_database(snapshot)
-    assert await source.count_user_words(2) == 1
-    assert await source.count_user_words(1) == 0
+    assert await source.get_user_game_words(2, "alias") == {"из_b"}
+    assert await source.get_user_game_words(1, "alias") == set()
     await source.dispose()
     await donor.dispose()
 
@@ -198,7 +192,7 @@ async def test_database_error_is_explicit(tmp_path: Path) -> None:
     """сбой базы поднимается как DatabaseError, а не как ошибка драйвера"""
     storage = SQLiteHistoryStorage(tmp_path / "broken.sqlite3")
     with pytest.raises(DatabaseError):
-        await storage.count_user_words(1)
+        await storage.get_user_game_words(1, "alias")
 
 
 def test_word_game_is_immutable(word_games: list[WordGame]) -> None:

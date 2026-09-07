@@ -131,10 +131,6 @@ DG_DROP_TITLE = "Убрать"
 TELEGRAM_MESSAGE_LIMIT = 3500
 MAX_CONTENT_LEN = 500
 
-BOSSES_HISTORY_KEY = "bosses"
-CURSES_HISTORY_KEY = "curses"
-WORDS_HISTORY_KEY = "words"
-
 CB_FORGET_ME_YES = "me:forget_yes"
 CB_FORGET_ME_NO = "me:forget_no"
 

@@ -414,12 +414,12 @@ async def test_forget_me_wipes_user_data(storage: SQLiteHistoryStorage) -> None:
     dispatcher = Dispatcher()
     dispatcher.include_router(create_settings_router(storage))
 
-    await storage.save_user_word(HOST, "слово")
+    await storage.save_user_game_word(HOST, "alias", "слово")
     await storage.add_favorite(HOST, "любимое")
 
     await _send(dispatcher, bot, HOST, HOST, "/forgetme")
     assert any("Удалить все твои данные" in text for text in recording.sent_to(HOST))
 
     await _press(dispatcher, bot, HOST, HOST, CB_FORGET_ME_YES)
-    assert await storage.count_user_words(HOST) == 0
+    assert await storage.get_user_game_words(HOST, "alias") == set()
     assert await storage.get_favorites(HOST) == []

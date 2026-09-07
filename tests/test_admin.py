@@ -70,13 +70,12 @@ async def _press(dispatcher: Dispatcher, bot: Bot, user_id: int, data: str) -> N
 
 def _admin_dispatcher(
     storage: SQLiteHistoryStorage,
-    content: DangerousWordsContent,
     word_games: list[WordGame],
 ) -> Dispatcher:
     """диспетчер с админскими роутерами"""
     dispatcher = Dispatcher()
     dispatcher.include_router(
-        create_admin_router(content, storage, frozenset({ADMIN}), word_games)
+        create_admin_router(storage, frozenset({ADMIN}), word_games)
     )
     dispatcher.include_router(
         create_content_admin_router(storage, frozenset({ADMIN}), word_games)
@@ -92,7 +91,7 @@ async def test_admin_menu_is_closed_for_outsiders(
     """не-админ не получает ответа на /admin"""
     recording = RecordingSession()
     bot = make_bot(recording)
-    dispatcher = _admin_dispatcher(storage, dangerous_content, word_games)
+    dispatcher = _admin_dispatcher(storage, word_games)
 
     await _send(dispatcher, bot, OUTSIDER, "/admin")
     assert recording.calls == []
@@ -106,7 +105,7 @@ async def test_admin_menu_is_closed_in_group(
     """админка работает только в личке, даже для админа"""
     recording = RecordingSession()
     bot = make_bot(recording)
-    dispatcher = _admin_dispatcher(storage, dangerous_content, word_games)
+    dispatcher = _admin_dispatcher(storage, word_games)
 
     await _send(dispatcher, bot, ADMIN, "/admin", chat_type="supergroup")
     assert recording.calls == []
@@ -117,21 +116,19 @@ async def test_summary_counts_every_kind_of_issue(
     dangerous_content: DangerousWordsContent,
     word_games: list[WordGame],
 ) -> None:
-    """сводка разложена по видам, чтобы числа сходились между собой"""
+    """сводка считает выдачи словесных игр: только они привязаны к человеку"""
     recording = RecordingSession()
     bot = make_bot(recording)
-    dispatcher = _admin_dispatcher(storage, dangerous_content, word_games)
+    dispatcher = _admin_dispatcher(storage, word_games)
 
-    await storage.save_user_word(1, "альфа")
-    await storage.save_user_word(2, "альфа")
-    await storage.save_user_game_word(1, "alias", "бета")
+    await storage.save_user_game_word(1, "alias", "альфа")
+    await storage.save_user_game_word(2, "alias", "альфа")
+    await storage.save_user_game_word(1, "crocodile", "бета")
 
     await _send(dispatcher, bot, ADMIN, "/admin")
     summary = recording.sent_to(ADMIN)[-1]
     assert "Пользователей: 2" in summary
-    assert "Слов «Опасные слова»: 2" in summary
-    assert "Слов словесных игр: 1" in summary
-    assert "Всего выдач: 3" in summary
+    assert "Выданных слов: 3" in summary
     assert "альфа x2" in summary
 
 
@@ -143,8 +140,8 @@ async def test_full_report_is_sent_as_a_file(
     """подробный отчёт уходит документом, а не серией сообщений"""
     recording = RecordingSession()
     bot = make_bot(recording)
-    dispatcher = _admin_dispatcher(storage, dangerous_content, word_games)
-    await storage.save_user_word(1, "альфа")
+    dispatcher = _admin_dispatcher(storage, word_games)
+    await storage.save_user_game_word(1, "alias", "альфа")
 
     await _press(dispatcher, bot, ADMIN, CB_ADMIN_STATS)
     assert "SendDocument" in recording.method_names()
@@ -159,8 +156,8 @@ async def test_csv_and_activity_reports(
     """csv отдаётся файлом, активность - текстом"""
     recording = RecordingSession()
     bot = make_bot(recording)
-    dispatcher = _admin_dispatcher(storage, dangerous_content, word_games)
-    await storage.save_user_word(1, "альфа")
+    dispatcher = _admin_dispatcher(storage, word_games)
+    await storage.save_user_game_word(1, "alias", "альфа")
 
     await _press(dispatcher, bot, ADMIN, CB_ADMIN_CSV)
     assert "SendDocument" in recording.method_names()
@@ -177,7 +174,7 @@ async def test_content_commands_add_and_remove(
     """админ добавляет и удаляет пользовательский контент"""
     recording = RecordingSession()
     bot = make_bot(recording)
-    dispatcher = _admin_dispatcher(storage, dangerous_content, word_games)
+    dispatcher = _admin_dispatcher(storage, word_games)
 
     await _send(dispatcher, bot, ADMIN, "/addword alias новое")
     assert "новое" in await storage.get_custom_words("alias")
@@ -209,7 +206,7 @@ async def test_oversized_import_is_rejected(
     """слишком большой пак отклоняется до скачивания"""
     recording = RecordingSession()
     bot = make_bot(recording)
-    dispatcher = _admin_dispatcher(storage, dangerous_content, word_games)
+    dispatcher = _admin_dispatcher(storage, word_games)
 
     message = Message.model_construct(
         message_id=1,

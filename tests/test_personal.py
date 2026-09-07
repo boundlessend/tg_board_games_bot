@@ -84,10 +84,10 @@ async def test_word_game_issues_words_and_resets(
     texts = recording.sent_to(USER)
     assert "Слово (1/" in texts[-2]
     assert "Слово (2/" in texts[-1]
-    assert await storage.count_user_game_words(USER, "whoami") == 2
+    assert len(await storage.get_user_game_words(USER, "whoami")) == 2
 
     await _press(dispatcher, bot, CB_WG_RESET_PREFIX + "whoami")
-    assert await storage.count_user_game_words(USER, "whoami") == 0
+    assert await storage.get_user_game_words(USER, "whoami") == set()
 
 
 async def test_unknown_game_is_ignored(

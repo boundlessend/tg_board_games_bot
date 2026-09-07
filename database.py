@@ -1,5 +1,6 @@
 import shutil
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -19,7 +20,6 @@ from sqlalchemy import (
     insert,
     select,
     text,
-    union_all,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -29,56 +29,19 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from constants import (
-    BOSSES_HISTORY_KEY,
-    CURSES_HISTORY_KEY,
-    WORDS_HISTORY_KEY,
-)
 from exceptions import DuplicateHistoryItemError
 from services.content import Boss, Curse
 
-USER_BOSSES_TABLE_NAME = "user_bosses"
-USER_CURSES_TABLE_NAME = "user_curses"
-USER_WORDS_TABLE_NAME = "user_words"
 USER_GAME_WORDS_TABLE_NAME = "user_game_words"
+
+# версия схемы в PRAGMA user_version: растёт при каждом несовместимом
+# изменении, чтобы бот не открыл базу, собранную более новой версией
+SCHEMA_VERSION = 1
 
 metadata = MetaData()
 
 # индекс по issued_at нужен аналитике: выдачи за период и активность по дням
-# фильтруют по нему, а без индекса это полное сканирование всех четырёх таблиц
-user_words_table = Table(
-    USER_WORDS_TABLE_NAME,
-    metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("telegram_id", BigInteger, nullable=False),
-    Column("word", String, nullable=False),
-    Column("issued_at", String, nullable=True),
-    UniqueConstraint("telegram_id", "word"),
-    Index("ix_user_words_issued_at", "issued_at"),
-)
-
-user_curses_table = Table(
-    USER_CURSES_TABLE_NAME,
-    metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("telegram_id", BigInteger, nullable=False),
-    Column("curse_id", String, nullable=False),
-    Column("issued_at", String, nullable=True),
-    UniqueConstraint("telegram_id", "curse_id"),
-    Index("ix_user_curses_issued_at", "issued_at"),
-)
-
-user_bosses_table = Table(
-    USER_BOSSES_TABLE_NAME,
-    metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("telegram_id", BigInteger, nullable=False),
-    Column("boss_id", String, nullable=False),
-    Column("issued_at", String, nullable=True),
-    UniqueConstraint("telegram_id", "boss_id"),
-    Index("ix_user_bosses_issued_at", "issued_at"),
-)
-
+# фильтруют по нему, а без индекса это полное сканирование таблицы истории
 user_game_words_table = Table(
     USER_GAME_WORDS_TABLE_NAME,
     metadata,
@@ -100,12 +63,15 @@ custom_words_table = Table(
     UniqueConstraint("game_id", "word"),
 )
 
+# sqlite_autoincrement не даёт переиспользовать id удалённой записи: иначе
+# новое проклятие получало бы cc_N, уже отмеченный выданным в идущей партии
 custom_curses_table = Table(
     "custom_curses",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("title", String, nullable=False),
     Column("description", String, nullable=False),
+    sqlite_autoincrement=True,
 )
 
 custom_bosses_table = Table(
@@ -114,6 +80,7 @@ custom_bosses_table = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("name", String, nullable=False),
     Column("description", String, nullable=False),
+    sqlite_autoincrement=True,
 )
 
 user_settings_table = Table(
@@ -149,12 +116,7 @@ session_state_table = Table(
 )
 
 
-_HISTORY_TABLE_NAMES: tuple[str, ...] = (
-    USER_WORDS_TABLE_NAME,
-    USER_CURSES_TABLE_NAME,
-    USER_BOSSES_TABLE_NAME,
-    USER_GAME_WORDS_TABLE_NAME,
-)
+_HISTORY_TABLE_NAMES: tuple[str, ...] = (USER_GAME_WORDS_TABLE_NAME,)
 
 # таблицы, которые целиком принадлежат одному пользователю: чистятся по /forgetme
 _USER_OWNED_TABLE_NAMES: tuple[str, ...] = (
@@ -170,30 +132,21 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _normalize_word(word: str) -> str:
+    """приводит слово пула к каноническому виду для сравнения без повторов"""
+    return word.strip().lower()
+
+
 def iso_days_ago(days: int) -> str:
     """возвращает ISO-метку времени days дней назад (UTC)"""
     return (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
 
 def _issuances_subquery() -> Subquery:
-    """строит объединение всех выдач как (telegram_id, issued_at)"""
-    return union_all(
-        select(
-            user_words_table.c.telegram_id.label("telegram_id"),
-            user_words_table.c.issued_at.label("issued_at"),
-        ),
-        select(
-            user_curses_table.c.telegram_id.label("telegram_id"),
-            user_curses_table.c.issued_at.label("issued_at"),
-        ),
-        select(
-            user_bosses_table.c.telegram_id.label("telegram_id"),
-            user_bosses_table.c.issued_at.label("issued_at"),
-        ),
-        select(
-            user_game_words_table.c.telegram_id.label("telegram_id"),
-            user_game_words_table.c.issued_at.label("issued_at"),
-        ),
+    """строит выдачи как (telegram_id, issued_at) для аналитики"""
+    return select(
+        user_game_words_table.c.telegram_id.label("telegram_id"),
+        user_game_words_table.c.issued_at.label("issued_at"),
     ).subquery()
 
 
@@ -205,12 +158,9 @@ class DatabaseError(RuntimeError):
 
 @dataclass(frozen=True)
 class SummaryTotals:
-    """агрегаты админской сводки по всем видам выдач"""
+    """агрегаты админской сводки: история ведётся только по словесным играм"""
 
     users: int
-    dangerous_words: int
-    curses: int
-    bosses: int
     game_words: int
 
 
@@ -221,7 +171,9 @@ def snapshot_has_core_tables(path: Path) -> bool:
     и оставил бота без данных
     """
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+        # closing обязателен: контекст sqlite3 закрывает транзакцию, но не
+        # соединение, и дескриптор файла жил бы до сборки мусора
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
             rows = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
@@ -297,6 +249,8 @@ class SQLiteHistoryStorage:
                 for table_name in _HISTORY_TABLE_NAMES:
                     await self._ensure_column(connection, table_name, "issued_at")
                 await self._ensure_column(connection, "session_state", "updated_at")
+                await self._ensure_indexes(connection)
+                await self._stamp_schema_version(connection)
         except SQLAlchemyError as error:
             raise DatabaseError("Не удалось инициализировать SQLite-базу.") from error
 
@@ -311,35 +265,33 @@ class SQLiteHistoryStorage:
                 text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} TEXT")
             )
 
-    async def save_user_word(self, telegram_id: int, word: str) -> None:
-        """сохраняет выданное пользователю слово"""
-        await self._save_user_item(user_words_table, "word", telegram_id, word)
+    async def _ensure_indexes(self, connection: AsyncConnection) -> None:
+        """досоздаёт индексы на таблицах, созданных прошлыми версиями схемы
 
-    async def reset_user_words(self, telegram_id: int) -> None:
-        """очищает историю слов пользователя"""
-        await self._reset_user_items(user_words_table, telegram_id)
+        create_all пропускает существующую таблицу целиком, вместе с её
+        индексами, поэтому база, пережившая добавление индекса, осталась бы
+        без него навсегда
+        """
+        for table in metadata.tables.values():
+            for index in table.indexes:
+                await connection.run_sync(index.create, checkfirst=True)
 
-    async def save_user_curse(self, telegram_id: int, curse_id: str) -> None:
-        """сохраняет выданное пользователю проклятье"""
-        await self._save_user_item(user_curses_table, "curse_id", telegram_id, curse_id)
+    async def _stamp_schema_version(self, connection: AsyncConnection) -> None:
+        """проставляет версию схемы, отказываясь работать с базой новее себя
 
-    async def reset_user_curses(self, telegram_id: int) -> None:
-        """очищает историю проклятий пользователя для нового круга"""
-        await self._reset_user_items(user_curses_table, telegram_id)
-
-    async def save_user_boss(self, telegram_id: int, boss_id: str) -> None:
-        """сохраняет выданного пользователю босса"""
-        await self._save_user_item(user_bosses_table, "boss_id", telegram_id, boss_id)
-
-    async def reset_user_bosses(self, telegram_id: int) -> None:
-        """очищает историю боссов пользователя для нового круга"""
-        await self._reset_user_items(user_bosses_table, telegram_id)
-
-    async def reset_user_all(self, telegram_id: int) -> None:
-        """очищает всю историю выдач пользователя"""
-        await self.reset_user_words(telegram_id)
-        await self.reset_user_curses(telegram_id)
-        await self.reset_user_bosses(telegram_id)
+        без отметки нельзя отличить базу этой версии от снимка, снятого
+        будущей версией бота: она пришла бы через /restore и молча потеряла
+        часть данных
+        """
+        result = await connection.execute(text("PRAGMA user_version"))
+        current = int(result.scalar_one())
+        if current > SCHEMA_VERSION:
+            raise DatabaseError(
+                f"База собрана схемой версии {current}, "
+                f"а бот понимает только {SCHEMA_VERSION}."
+            )
+        if current != SCHEMA_VERSION:
+            await connection.execute(text(f"PRAGMA user_version={SCHEMA_VERSION}"))
 
     async def get_user_game_words(self, telegram_id: int, game_id: str) -> set[str]:
         """возвращает слова словесной игры, выданные пользователю"""
@@ -394,30 +346,15 @@ class SQLiteHistoryStorage:
                 f"Не удалось очистить историю слов игры {game_id} для telegram_id={telegram_id}."
             ) from error
 
-    async def count_user_game_words(self, telegram_id: int, game_id: str) -> int:
-        """возвращает количество выданных слов словесной игры"""
-        statement = (
-            select(func.count())
-            .select_from(user_game_words_table)
-            .where(
-                user_game_words_table.c.telegram_id == telegram_id,
-                user_game_words_table.c.game_id == game_id,
-            )
-        )
-        try:
-            async with self._engine.connect() as connection:
-                result = await connection.execute(statement)
-                count = result.scalar_one()
-        except SQLAlchemyError as error:
-            raise DatabaseError(
-                f"Не удалось посчитать слова игры {game_id} для telegram_id={telegram_id}."
-            ) from error
-
-        return int(count)
-
     async def add_custom_word(self, game_id: str, word: str) -> None:
-        """добавляет пользовательское слово в пул игры"""
-        statement = insert(custom_words_table).values(game_id=game_id, word=word)
+        """добавляет пользовательское слово в пул игры
+
+        слово нормализуется здесь, а не у вызывающего: UNIQUE в sqlite
+        регистрозависим, и «Кот» рядом с «кот» пробил бы выдачу без повторов
+        """
+        statement = insert(custom_words_table).values(
+            game_id=game_id, word=_normalize_word(word)
+        )
         try:
             async with self._engine.begin() as connection:
                 await connection.execute(statement)
@@ -438,7 +375,8 @@ class SQLiteHistoryStorage:
         """
         if len(words) == 0:
             return 0
-        rows = [{"game_id": game_id, "word": word} for word in dict.fromkeys(words)]
+        normalized = dict.fromkeys(_normalize_word(word) for word in words)
+        rows = [{"game_id": game_id, "word": word} for word in normalized]
         statement = sqlite_insert(custom_words_table).on_conflict_do_nothing(
             index_elements=[
                 custom_words_table.c.game_id,
@@ -472,12 +410,20 @@ class SQLiteHistoryStorage:
         return [str(row[0]) for row in rows]
 
     async def add_custom_curse(self, title: str, description: str) -> None:
-        """добавляет пользовательское проклятье"""
+        """добавляет пользовательское проклятье, отвергая полный дубль"""
+        existing = select(custom_curses_table.c.id).where(
+            custom_curses_table.c.title == title,
+            custom_curses_table.c.description == description,
+        )
         statement = insert(custom_curses_table).values(
             title=title, description=description
         )
         try:
             async with self._engine.begin() as connection:
+                if (await connection.execute(existing)).first() is not None:
+                    raise DuplicateHistoryItemError(
+                        f"Проклятье уже добавлено: {title}."
+                    )
                 await connection.execute(statement)
         except SQLAlchemyError as error:
             raise DatabaseError(
@@ -506,12 +452,18 @@ class SQLiteHistoryStorage:
         ]
 
     async def add_custom_boss(self, name: str, description: str) -> None:
-        """добавляет пользовательского босса"""
+        """добавляет пользовательского босса, отвергая полный дубль"""
+        existing = select(custom_bosses_table.c.id).where(
+            custom_bosses_table.c.name == name,
+            custom_bosses_table.c.description == description,
+        )
         statement = insert(custom_bosses_table).values(
             name=name, description=description
         )
         try:
             async with self._engine.begin() as connection:
+                if (await connection.execute(existing)).first() is not None:
+                    raise DuplicateHistoryItemError(f"Босс уже добавлен: {name}.")
                 await connection.execute(statement)
         except SQLAlchemyError as error:
             raise DatabaseError(
@@ -655,18 +607,23 @@ class SQLiteHistoryStorage:
 
     async def add_favorite(self, telegram_id: int, word: str) -> bool:
         """добавляет слово в избранное, возвращает False при дубле"""
-        statement = insert(favorites_table).values(telegram_id=telegram_id, word=word)
+        statement = (
+            sqlite_insert(favorites_table)
+            .values(telegram_id=telegram_id, word=word)
+            .on_conflict_do_nothing(
+                index_elements=[favorites_table.c.telegram_id, favorites_table.c.word]
+            )
+        )
         try:
             async with self._engine.begin() as connection:
-                await connection.execute(statement)
-        except IntegrityError:
-            return False
+                # rowcount отличает вставку от конфликта, а except
+                # IntegrityError гасил бы заодно и чужие нарушения целостности
+                result = await connection.execute(statement)
+                return result.rowcount > 0
         except SQLAlchemyError as error:
             raise DatabaseError(
                 f"Не удалось добавить в избранное для telegram_id={telegram_id}."
             ) from error
-
-        return True
 
     async def get_favorites(self, telegram_id: int) -> list[str]:
         """возвращает избранные слова пользователя"""
@@ -699,58 +656,51 @@ class SQLiteHistoryStorage:
                 f"Не удалось очистить избранное для telegram_id={telegram_id}."
             ) from error
 
-    async def get_all_user_statistics(self) -> dict[int, dict[str, list[str]]]:
-        """возвращает полную историю выдач всех пользователей"""
-        words = await self._get_all_items(user_words_table, "word")
-        curses = await self._get_all_items(user_curses_table, "curse_id")
-        bosses = await self._get_all_items(user_bosses_table, "boss_id")
-        telegram_ids = set(words) | set(curses) | set(bosses)
+    async def get_game_word_statistics(self) -> dict[int, dict[str, list[str]]]:
+        """возвращает историю слов словесных игр как {telegram_id: {game_id: слова}}"""
+        statement = select(
+            user_game_words_table.c.telegram_id,
+            user_game_words_table.c.game_id,
+            user_game_words_table.c.word,
+        )
+        try:
+            async with self._engine.connect() as connection:
+                result = await connection.execute(statement)
+                rows = result.fetchall()
+        except SQLAlchemyError as error:
+            raise DatabaseError("Не удалось получить историю слов игр.") from error
+
+        grouped: dict[int, dict[str, list[str]]] = {}
+        for telegram_id, game_id, word in rows:
+            by_game = grouped.setdefault(int(telegram_id), {})
+            by_game.setdefault(str(game_id), []).append(str(word))
         return {
             telegram_id: {
-                WORDS_HISTORY_KEY: sorted(words.get(telegram_id, [])),
-                CURSES_HISTORY_KEY: sorted(curses.get(telegram_id, [])),
-                BOSSES_HISTORY_KEY: sorted(bosses.get(telegram_id, [])),
+                game_id: sorted(words) for game_id, words in sorted(by_game.items())
             }
-            for telegram_id in sorted(telegram_ids)
+            for telegram_id, by_game in sorted(grouped.items())
         }
 
     async def get_summary_totals(self) -> SummaryTotals:
         """считает сводку агрегатами в SQL, не выгружая историю в память"""
         issuances = _issuances_subquery()
         users_statement = select(func.count(func.distinct(issuances.c.telegram_id)))
+        words_statement = select(func.count()).select_from(user_game_words_table)
         try:
             async with self._engine.connect() as connection:
                 users = (await connection.execute(users_statement)).scalar_one()
-                counts = [
-                    (
-                        await connection.execute(
-                            select(func.count()).select_from(table)
-                        )
-                    ).scalar_one()
-                    for table in (
-                        user_words_table,
-                        user_curses_table,
-                        user_bosses_table,
-                        user_game_words_table,
-                    )
-                ]
+                game_words = (await connection.execute(words_statement)).scalar_one()
         except SQLAlchemyError as error:
             raise DatabaseError("Не удалось посчитать сводку.") from error
 
-        return SummaryTotals(
-            users=int(users),
-            dangerous_words=int(counts[0]),
-            curses=int(counts[1]),
-            bosses=int(counts[2]),
-            game_words=int(counts[3]),
-        )
+        return SummaryTotals(users=int(users), game_words=int(game_words))
 
-    async def get_top_words(self, limit: int) -> list[tuple[str, int]]:
-        """возвращает самые частые слова «опасных слов» с их числом выдач"""
+    async def get_top_game_words(self, limit: int) -> list[tuple[str, int]]:
+        """возвращает самые частые слова словесных игр с числом выдач"""
         statement = (
-            select(user_words_table.c.word, func.count().label("uses"))
-            .group_by(user_words_table.c.word)
-            .order_by(func.count().desc(), user_words_table.c.word)
+            select(user_game_words_table.c.word, func.count().label("uses"))
+            .group_by(user_game_words_table.c.word)
+            .order_by(func.count().desc(), user_game_words_table.c.word)
             .limit(limit)
         )
         try:
@@ -761,10 +711,6 @@ class SQLiteHistoryStorage:
             raise DatabaseError("Не удалось посчитать топ слов.") from error
 
         return [(str(row[0]), int(row[1])) for row in rows]
-
-    async def count_user_words(self, telegram_id: int) -> int:
-        """возвращает количество выданных пользователю слов"""
-        return await self._count_user_items(user_words_table, telegram_id)
 
     async def delete_user_data(self, telegram_id: int) -> int:
         """удаляет все личные данные пользователя, возвращает число строк"""
@@ -872,27 +818,6 @@ class SQLiteHistoryStorage:
                 f"Не удалось удалить сессию scope={scope}, key={key}."
             ) from error
 
-    async def replace_session_scope(self, scope: str, items: dict[str, str]) -> None:
-        """перезаписывает снапшоты активных сессий одного scope"""
-        now = _now_iso()
-        rows = [
-            {"scope": scope, "key": key, "data": data, "updated_at": now}
-            for key, data in items.items()
-        ]
-        try:
-            async with self._engine.begin() as connection:
-                await connection.execute(
-                    delete(session_state_table).where(
-                        session_state_table.c.scope == scope
-                    )
-                )
-                if rows:
-                    await connection.execute(insert(session_state_table), rows)
-        except SQLAlchemyError as error:
-            raise DatabaseError(
-                f"Не удалось сохранить состояние сессий scope={scope}."
-            ) from error
-
     async def delete_stale_sessions(self, cutoff_iso: str) -> int:
         """удаляет снапшоты сессий, не обновлявшиеся с cutoff_iso
 
@@ -926,76 +851,3 @@ class SQLiteHistoryStorage:
             ) from error
 
         return {str(row[0]): str(row[1]) for row in rows}
-
-    async def _get_all_items(
-        self, table: Table, item_column: str
-    ) -> dict[int, list[str]]:
-        """возвращает значения таблицы истории, сгруппированные по пользователю"""
-        statement = select(table.c.telegram_id, table.c[item_column])
-        try:
-            async with self._engine.connect() as connection:
-                result = await connection.execute(statement)
-                rows = result.fetchall()
-        except SQLAlchemyError as error:
-            raise DatabaseError(
-                f"Не удалось получить историю из таблицы {table.name}."
-            ) from error
-
-        grouped: dict[int, list[str]] = {}
-        for row in rows:
-            grouped.setdefault(int(row[0]), []).append(str(row[1]))
-        return grouped
-
-    async def _count_user_items(self, table: Table, telegram_id: int) -> int:
-        """возвращает количество значений в таблице истории"""
-        statement = (
-            select(func.count())
-            .select_from(table)
-            .where(table.c.telegram_id == telegram_id)
-        )
-        try:
-            async with self._engine.connect() as connection:
-                result = await connection.execute(statement)
-                count = result.scalar_one()
-        except SQLAlchemyError as error:
-            raise DatabaseError(
-                f"Не удалось посчитать элементы в таблице {table.name} для telegram_id={telegram_id}."
-            ) from error
-
-        return int(count)
-
-    async def _save_user_item(
-        self,
-        table: Table,
-        item_column: str,
-        telegram_id: int,
-        item_id: str,
-    ) -> None:
-        """сохраняет значение в таблицу истории"""
-        statement = insert(table).values(
-            telegram_id=telegram_id,
-            issued_at=_now_iso(),
-            **{item_column: item_id},
-        )
-        try:
-            async with self._engine.begin() as connection:
-                await connection.execute(statement)
-        except IntegrityError as error:
-            raise DuplicateHistoryItemError(
-                f"Элемент уже сохранён в таблице {table.name}: telegram_id={telegram_id}, item_id={item_id}."
-            ) from error
-        except SQLAlchemyError as error:
-            raise DatabaseError(
-                f"Не удалось сохранить элемент в таблицу {table.name}: telegram_id={telegram_id}, item_id={item_id}."
-            ) from error
-
-    async def _reset_user_items(self, table: Table, telegram_id: int) -> None:
-        """удаляет значения из таблицы истории"""
-        statement = delete(table).where(table.c.telegram_id == telegram_id)
-        try:
-            async with self._engine.begin() as connection:
-                await connection.execute(statement)
-        except SQLAlchemyError as error:
-            raise DatabaseError(
-                f"Не удалось очистить историю в таблице {table.name} для telegram_id={telegram_id}."
-            ) from error

@@ -6,13 +6,10 @@ from aiogram.filters import Command
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from constants import (
-    BOSSES_HISTORY_KEY,
     CB_ADMIN_ACTIVITY,
     CB_ADMIN_CLOSE,
     CB_ADMIN_CSV,
     CB_ADMIN_STATS,
-    CURSES_HISTORY_KEY,
-    WORDS_HISTORY_KEY,
 )
 from database import (
     DatabaseError,
@@ -22,21 +19,18 @@ from database import (
 )
 from handlers.common import is_private_admin, is_private_admin_callback
 from keyboards import create_admin_keyboard, create_private_menu_keyboard
-from services.content import (
-    Boss,
-    Curse,
-    DangerousWordsContent,
-    WordGame,
-)
+from services.content import WordGame
 
 logger = logging.getLogger(__name__)
 
 ADMIN_CLOSED_TEXT = "Админка закрыта"
 TOP_WORDS_LIMIT = 10
+# выгрузки содержат telegram_id и остаются на серверах telegram
+ID_WARNING = "В файле есть telegram_id пользователей: он останется в Telegram."
+CSV_CAPTION = f"Статистика CSV.\n{ID_WARNING}"
 
 
 def create_admin_router(
-    content: DangerousWordsContent,
     storage: SQLiteHistoryStorage,
     admin_ids: frozenset[int],
     word_games: list[WordGame],
@@ -64,7 +58,9 @@ def create_admin_router(
     async def handle_admin_stats_request(callback: CallbackQuery) -> None:
         message = callback.message
         if isinstance(message, Message):
-            await _send_all_statistics(message, content, storage, callback.from_user.id)
+            await _send_all_statistics(
+                message, word_games, storage, callback.from_user.id
+            )
         await callback.answer()
 
     @router.callback_query(F.data == CB_ADMIN_CSV)
@@ -75,7 +71,7 @@ def create_admin_router(
             return
 
         try:
-            statistics = await storage.get_all_user_statistics()
+            statistics = await storage.get_game_word_statistics()
         except DatabaseError:
             logger.exception(
                 "database_error",
@@ -91,7 +87,7 @@ def create_admin_router(
             _build_statistics_csv(statistics).encode("utf-8"),
             filename="stats.csv",
         )
-        await message.answer_document(document, caption="Статистика CSV")
+        await message.answer_document(document, caption=CSV_CAPTION)
         await callback.answer()
 
     @router.callback_query(F.data == CB_ADMIN_ACTIVITY)
@@ -143,7 +139,7 @@ async def _send_summary(
     """отправляет администратору сводку по всем пользователям"""
     try:
         totals = await storage.get_summary_totals()
-        top_words = await storage.get_top_words(TOP_WORDS_LIMIT)
+        top_words = await storage.get_top_game_words(TOP_WORDS_LIMIT)
         recent_issuances = await storage.count_issuances_since(iso_days_ago(7))
         recent_users = await storage.count_active_users_since(iso_days_ago(7))
     except DatabaseError:
@@ -168,26 +164,20 @@ def _build_summary(
 ) -> str:
     """собирает сводку по всем пользователям
 
-    выдачи разложены по видам, чтобы сумма сходилась с показателем за 7
-    дней: он тоже считает все игры, а не только «опасные слова»
+    считаются словесные игры: только их выдачи привязаны к telegram_id.
+    В групповых играх контент выдаётся на партию, а не на человека, и
+    персональной истории по нему нет
     """
     if totals.users == 0:
         return "Статистика пока пустая."
 
-    total_issuances = (
-        totals.dangerous_words + totals.curses + totals.bosses + totals.game_words
-    )
     sections = [
-        "Сводка",
+        "Сводка (словесные игры)",
         f"Пользователей: {totals.users}",
-        f"Слов «Опасные слова»: {totals.dangerous_words}",
-        f"Проклятий: {totals.curses}",
-        f"Боссов: {totals.bosses}",
-        f"Слов словесных игр: {totals.game_words}",
-        f"Всего выдач: {total_issuances}",
-        f"Выдач за 7 дней (все игры): {recent_issuances}",
+        f"Выданных слов: {totals.game_words}",
+        f"Выдач за 7 дней: {recent_issuances}",
         f"Активных за 7 дней: {recent_users}",
-        f"Топ-{TOP_WORDS_LIMIT} слов «Опасные слова»:",
+        f"Топ-{TOP_WORDS_LIMIT} слов:",
         _format_values([f"{word} x{count}" for word, count in top_words]),
     ]
     return "\n\n".join(sections)
@@ -205,21 +195,17 @@ def _format_activity(by_day: list[tuple[str, int]]) -> str:
 def _build_statistics_csv(
     statistics: dict[int, dict[str, list[str]]],
 ) -> str:
-    """собирает csv со сводкой выдач по каждому пользователю"""
-    lines = ["telegram_id,words,curses,bosses"]
-    for telegram_id, user in statistics.items():
-        lines.append(
-            f"{telegram_id},"
-            f"{len(user[WORDS_HISTORY_KEY])},"
-            f"{len(user[CURSES_HISTORY_KEY])},"
-            f"{len(user[BOSSES_HISTORY_KEY])}"
-        )
+    """собирает csv с числом выданных слов по пользователю и игре"""
+    lines = ["telegram_id,game_id,words"]
+    for telegram_id, by_game in statistics.items():
+        for game_id, words in by_game.items():
+            lines.append(f"{telegram_id},{game_id},{len(words)}")
     return "\n".join(lines) + "\n"
 
 
 async def _send_all_statistics(
     message: Message,
-    content: DangerousWordsContent,
+    word_games: list[WordGame],
     storage: SQLiteHistoryStorage,
     admin_id: int,
 ) -> None:
@@ -229,7 +215,7 @@ async def _send_all_statistics(
     бы во флуд-контроль telegram, поэтому отдаём документом
     """
     try:
-        statistics = await storage.get_all_user_statistics()
+        statistics = await storage.get_game_word_statistics()
     except DatabaseError:
         logger.exception(
             "database_error",
@@ -238,77 +224,44 @@ async def _send_all_statistics(
         await message.answer("Не удалось получить статистику.")
         return
 
-    report = _build_all_statistics_report(content, statistics)
+    report = _build_all_statistics_report(word_games, statistics)
     document = BufferedInputFile(report.encode("utf-8"), filename="report.txt")
     await message.answer_document(
         document,
-        caption=f"Полный отчёт: пользователей {len(statistics)}",
+        caption=f"Полный отчёт: пользователей {len(statistics)}.\n{ID_WARNING}",
         reply_markup=create_admin_keyboard(),
     )
 
 
 def _build_all_statistics_report(
-    content: DangerousWordsContent,
+    word_games: list[WordGame],
     statistics: dict[int, dict[str, list[str]]],
 ) -> str:
     """собирает общий отчёт по всем пользователям"""
     if len(statistics) == 0:
         return "Статистика пока пустая."
 
+    pool_sizes = {game.game_id: len(game.words) for game in word_games}
     reports = [
-        _build_user_statistics_report(content, telegram_id, user_statistics)
+        _build_user_statistics_report(pool_sizes, telegram_id, user_statistics)
         for telegram_id, user_statistics in statistics.items()
     ]
     return "\n\n---\n\n".join(reports)
 
 
 def _build_user_statistics_report(
-    content: DangerousWordsContent,
+    pool_sizes: dict[str, int],
     telegram_id: int,
     statistics: dict[str, list[str]],
 ) -> str:
-    """собирает текстовый отчёт по истории пользователя"""
-    curse_titles = _create_curse_titles_map(content.curses)
-    boss_names = _create_boss_names_map(content.bosses)
-
-    words = statistics[WORDS_HISTORY_KEY]
-    curse_ids = statistics[CURSES_HISTORY_KEY]
-    boss_ids = statistics[BOSSES_HISTORY_KEY]
-
-    sections = [
-        f"Статистика пользователя {telegram_id}",
-        f"Слова: {len(words)}/{len(content.words)}",
-        _format_values(words),
-        f"Проклятья: {len(curse_ids)}/{len(content.curses)}",
-        _format_values(
-            [_format_curse(curse_id, curse_titles) for curse_id in curse_ids]
-        ),
-        f"Боссы: {len(boss_ids)}/{len(content.bosses)}",
-        _format_values([_format_boss(boss_id, boss_names) for boss_id in boss_ids]),
-    ]
+    """собирает текстовый отчёт по истории слов пользователя"""
+    sections = [f"Статистика пользователя {telegram_id}"]
+    for game_id, words in statistics.items():
+        pool_size = pool_sizes.get(game_id)
+        counter = f"{len(words)}/{pool_size}" if pool_size else str(len(words))
+        sections.append(f"{game_id}: {counter}")
+        sections.append(_format_values(words))
     return "\n\n".join(sections)
-
-
-def _create_curse_titles_map(curses: list[Curse]) -> dict[str, str]:
-    """создаёт словарь названий проклятий по id"""
-    return {curse.id: curse.title for curse in curses}
-
-
-def _create_boss_names_map(bosses: list[Boss]) -> dict[str, str]:
-    """создаёт словарь имён боссов по id"""
-    return {boss.id: boss.name for boss in bosses}
-
-
-def _format_curse(curse_id: str, curse_titles: dict[str, str]) -> str:
-    """форматирует проклятье для админского отчёта"""
-    title = curse_titles.get(curse_id, "неизвестное проклятье")
-    return f"{curse_id} - {title}"
-
-
-def _format_boss(boss_id: str, boss_names: dict[str, str]) -> str:
-    """форматирует босса для админского отчёта"""
-    name = boss_names.get(boss_id, "неизвестный босс")
-    return f"{boss_id} - {name}"
 
 
 def _format_values(values: list[str]) -> str:

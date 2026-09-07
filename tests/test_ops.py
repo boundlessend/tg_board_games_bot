@@ -16,7 +16,7 @@ async def test_backup_creates_snapshot_and_rotates(tmp_path: Path) -> None:
     """снимок создаётся, лишние удаляются, свежие остаются"""
     storage = SQLiteHistoryStorage(tmp_path / "bot.sqlite3")
     await storage.initialize()
-    await storage.save_user_word(1, "слово")
+    await storage.save_user_game_word(1, "alias", "слово")
 
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
@@ -24,7 +24,7 @@ async def test_backup_creates_snapshot_and_rotates(tmp_path: Path) -> None:
     assert snapshot is not None and snapshot.exists()
 
     restored = SQLiteHistoryStorage(snapshot)
-    assert await restored.count_user_words(1) == 1
+    assert await restored.get_user_game_words(1, "alias") == {"слово"}
     await restored.dispose()
     await storage.dispose()
 

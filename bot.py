@@ -136,7 +136,7 @@ async def _run(
     dispatcher.include_router(create_settings_router(storage))
     dispatcher.include_router(create_favorites_router(storage))
     dispatcher.include_router(
-        create_admin_router(content, storage, config.admin_ids, word_games)
+        create_admin_router(storage, config.admin_ids, word_games)
     )
     dispatcher.include_router(
         create_content_admin_router(storage, config.admin_ids, word_games)
