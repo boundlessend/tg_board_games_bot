@@ -9,7 +9,11 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 COPY requirements.lock .
-RUN pip install --require-hashes -r requirements.lock
+# pip после установки не нужен, а его вендоренные копии msgpack и setuptools
+# тянут за собой чужие уязвимости: в рантайме образ ничего не доставляет
+RUN pip install --require-hashes -r requirements.lock \
+    && pip uninstall --yes pip \
+    && rm -rf /usr/local/lib/python3.14/site-packages/pip*
 
 COPY . .
 
