@@ -5,7 +5,7 @@ from typing import Any
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from constants import (
     CB_DG_BOSS,
@@ -54,6 +54,9 @@ class DangerousGroup:
     слово (соперники тянут его и пишут запретные), explainer_ids[t] -
     объясняющий этой команды, sent[t] - доставлено ли слово объясняющему
 
+    word_holder_ids[t] - соперник, который вытянул слово команды t: до
+    сброса раунда слово принадлежит ему, а объясняющим за t он стать не может
+
     pending_curse_id и pending_boss_id держат ещё не принятое предложение:
     при рероле оно возвращается в пул, а «Убрать» снимает его целиком
     """
@@ -62,6 +65,7 @@ class DangerousGroup:
     board_chat_id: int = 0
     board_message_id: int | None = None
     words: list[str | None] = field(default_factory=lambda: [None, None])
+    word_holder_ids: list[int | None] = field(default_factory=lambda: [None, None])
     explainer_ids: list[int | None] = field(default_factory=lambda: [None, None])
     explainer_names: list[str | None] = field(default_factory=lambda: [None, None])
     sent: list[bool] = field(default_factory=lambda: [False, False])
@@ -108,7 +112,10 @@ def create_dangerous_group_router(
                 host_id=callback.from_user.id, board_chat_id=message.chat.id
             )
             sessions[message.chat.id] = session
-        # партия уже идёт: показываем её поле заново, сброс - через «Завершить»
+        else:
+            # партия уже идёт: старое табло гасим, чтобы жил один комплект кнопок
+            await _disable_board(callback.bot, session)
+            session.board_chat_id = message.chat.id
         sent = await message.answer(
             _render_board(session),
             reply_markup=create_dangerous_group_keyboard(),
@@ -123,6 +130,12 @@ def create_dangerous_group_router(
         team = _parse_team(callback.data, CB_DG_EXPLAIN_PREFIX)
         if session is None or team is None:
             await callback.answer()
+            return
+        if session.word_holder_ids[team] == callback.from_user.id:
+            await callback.answer(
+                f"Ты уже видел слово {team_label(team)}: объясняет другой.",
+                show_alert=True,
+            )
             return
         if session.explainer_ids[team] != callback.from_user.id:
             # у нового объясняющего слова нет - доставку нужно повторить
@@ -146,23 +159,34 @@ def create_dangerous_group_router(
                 show_alert=True,
             )
             return
+        holder = session.word_holder_ids[team]
+        if holder is not None and holder != callback.from_user.id:
+            await callback.answer(
+                f"Слово {team_label(team)} уже вытянул другой игрок.",
+                show_alert=True,
+            )
+            return
         bot = callback.bot
         if bot is None:
             await callback.answer()
             return
-        try:
-            pool = list(
-                dict.fromkeys(
-                    content.words
-                    + await storage.get_custom_words(DANGEROUS_WORDS_GAME_ID)
+        # повторное нажатие тем же игроком возвращает то же слово, а не новое
+        issued = session.words[team]
+        if issued is None:
+            try:
+                pool = list(
+                    dict.fromkeys(
+                        content.words
+                        + await storage.get_custom_words(DANGEROUS_WORDS_GAME_ID)
+                    )
                 )
-            )
-        except DatabaseError:
-            logger.exception("database_error", extra={"action": "dg_word"})
-            await callback.answer("Ошибка БД. Попробуйте позже.", show_alert=True)
-            return
-
-        word = pick_word(pool, session.issued_words)
+            except DatabaseError:
+                logger.exception("database_error", extra={"action": "dg_word"})
+                await callback.answer("Ошибка БД. Попробуйте позже.", show_alert=True)
+                return
+            word = pick_word(pool, session.issued_words)
+        else:
+            word = issued
         try:
             await bot.send_message(
                 callback.from_user.id,
@@ -170,14 +194,17 @@ def create_dangerous_group_router(
                 "Напишите запретные слова, затем «отправить».",
             )
         except TelegramForbiddenError:
-            # слово не показано - возвращаем его в пул
-            session.issued_words.discard(word)
+            if issued is None:
+                # слово не показано - возвращаем его в пул
+                session.issued_words.discard(word)
             await callback.answer(
                 "Не дошло: нужен /start в личке с ботом.", show_alert=True
             )
             return
-        session.words[team] = word
-        session.sent[team] = False
+        session.word_holder_ids[team] = callback.from_user.id
+        if issued is None:
+            session.words[team] = word
+            session.sent[team] = False
         await _edit_board(callback, session)
         await callback.answer("Слово в ЛС: напишите запретные.")
 
@@ -231,6 +258,7 @@ def create_dangerous_group_router(
             )
             return
         session.words = [None, None]
+        session.word_holder_ids = [None, None]
         session.explainer_ids = [None, None]
         session.explainer_names = [None, None]
         session.sent = [False, False]
@@ -255,13 +283,13 @@ def create_dangerous_group_router(
             return
         await message.answer(
             _curse_text(curse),
-            reply_markup=create_dg_offer_keyboard(
-                CB_DG_CURSE_KEEP, CB_DG_CURSE_REROLL, CB_DG_CURSE_DROP
+            reply_markup=_offer_keyboard(
+                CB_DG_CURSE_KEEP, CB_DG_CURSE_REROLL, CB_DG_CURSE_DROP, curse.id
             ),
         )
         await callback.answer()
 
-    @router.callback_query(F.data == CB_DG_CURSE_REROLL)
+    @router.callback_query(data_startswith(CB_DG_CURSE_REROLL))
     async def handle_curse_reroll(callback: CallbackQuery) -> None:
         """заменяет предложенное проклятие новым (только ведущий)"""
         session, chat_id = lookup_chat_session(callback, sessions)
@@ -274,6 +302,11 @@ def create_dangerous_group_router(
                 "Реролл делает ведущий или админ чата.", show_alert=True
             )
             return
+        if not _is_current_offer(
+            callback.data, CB_DG_CURSE_REROLL, session.pending_curse_id
+        ):
+            await _answer_stale(callback)
+            return
         # отвергнутое проклятие возвращается в пул этой партии
         _return_to_pool(session.issued_curses, session.pending_curse_id)
         curse = await _draw_curse(callback, session, content, storage)
@@ -282,15 +315,15 @@ def create_dangerous_group_router(
         try:
             await message.edit_text(
                 _curse_text(curse),
-                reply_markup=create_dg_offer_keyboard(
-                    CB_DG_CURSE_KEEP, CB_DG_CURSE_REROLL, CB_DG_CURSE_DROP
+                reply_markup=_offer_keyboard(
+                    CB_DG_CURSE_KEEP, CB_DG_CURSE_REROLL, CB_DG_CURSE_DROP, curse.id
                 ),
             )
         except TelegramBadRequest:
             pass
         await callback.answer("Новое проклятие.")
 
-    @router.callback_query(F.data == CB_DG_CURSE_KEEP)
+    @router.callback_query(data_startswith(CB_DG_CURSE_KEEP))
     async def handle_curse_keep(callback: CallbackQuery) -> None:
         """фиксирует проклятие в чате, убирая кнопки (только ведущий)"""
         session, chat_id = lookup_chat_session(callback, sessions)
@@ -300,11 +333,16 @@ def create_dangerous_group_router(
         if not await _may_manage(callback, session, chat_id):
             await callback.answer("Принимает ведущий или админ чата.", show_alert=True)
             return
+        if not _is_current_offer(
+            callback.data, CB_DG_CURSE_KEEP, session.pending_curse_id
+        ):
+            await _answer_stale(callback)
+            return
         session.pending_curse_id = None
         await _strip_offer_keyboard(callback)
         await callback.answer("Проклятие принято.")
 
-    @router.callback_query(F.data == CB_DG_CURSE_DROP)
+    @router.callback_query(data_startswith(CB_DG_CURSE_DROP))
     async def handle_curse_drop(callback: CallbackQuery) -> None:
         """снимает предложенное проклятие и возвращает его в пул"""
         session, chat_id = lookup_chat_session(callback, sessions)
@@ -313,6 +351,11 @@ def create_dangerous_group_router(
             return
         if not await _may_manage(callback, session, chat_id):
             await callback.answer("Убирает ведущий или админ чата.", show_alert=True)
+            return
+        if not _is_current_offer(
+            callback.data, CB_DG_CURSE_DROP, session.pending_curse_id
+        ):
+            await _answer_stale(callback)
             return
         _return_to_pool(session.issued_curses, session.pending_curse_id)
         session.pending_curse_id = None
@@ -348,13 +391,13 @@ def create_dangerous_group_router(
             return
         await message.answer(
             _boss_text(boss),
-            reply_markup=create_dg_offer_keyboard(
-                CB_DG_BOSS_KEEP, CB_DG_BOSS_REROLL, CB_DG_BOSS_DROP
+            reply_markup=_offer_keyboard(
+                CB_DG_BOSS_KEEP, CB_DG_BOSS_REROLL, CB_DG_BOSS_DROP, boss.id
             ),
         )
         await callback.answer()
 
-    @router.callback_query(F.data == CB_DG_BOSS_REROLL)
+    @router.callback_query(data_startswith(CB_DG_BOSS_REROLL))
     async def handle_boss_reroll(callback: CallbackQuery) -> None:
         """заменяет предложенного босса новым (только ведущий)"""
         session, chat_id = lookup_chat_session(callback, sessions)
@@ -367,6 +410,11 @@ def create_dangerous_group_router(
                 "Реролл делает ведущий или админ чата.", show_alert=True
             )
             return
+        if not _is_current_offer(
+            callback.data, CB_DG_BOSS_REROLL, session.pending_boss_id
+        ):
+            await _answer_stale(callback)
+            return
         _return_to_pool(session.issued_bosses, session.pending_boss_id)
         boss = await _draw_boss(callback, session, content, storage)
         if boss is None:
@@ -374,15 +422,15 @@ def create_dangerous_group_router(
         try:
             await message.edit_text(
                 _boss_text(boss),
-                reply_markup=create_dg_offer_keyboard(
-                    CB_DG_BOSS_KEEP, CB_DG_BOSS_REROLL, CB_DG_BOSS_DROP
+                reply_markup=_offer_keyboard(
+                    CB_DG_BOSS_KEEP, CB_DG_BOSS_REROLL, CB_DG_BOSS_DROP, boss.id
                 ),
             )
         except TelegramBadRequest:
             pass
         await callback.answer("Новый босс.")
 
-    @router.callback_query(F.data == CB_DG_BOSS_KEEP)
+    @router.callback_query(data_startswith(CB_DG_BOSS_KEEP))
     async def handle_boss_keep(callback: CallbackQuery) -> None:
         """фиксирует босса на игру, убирая кнопки (только ведущий)"""
         session, chat_id = lookup_chat_session(callback, sessions)
@@ -392,13 +440,18 @@ def create_dangerous_group_router(
         if not await _may_manage(callback, session, chat_id):
             await callback.answer("Принимает ведущий или админ чата.", show_alert=True)
             return
+        if not _is_current_offer(
+            callback.data, CB_DG_BOSS_KEEP, session.pending_boss_id
+        ):
+            await _answer_stale(callback)
+            return
         session.boss_revealed = True
         session.pending_boss_id = None
         await _strip_offer_keyboard(callback)
         await _refresh_board(callback.bot, session)
         await callback.answer("Босс зафиксирован на игру.")
 
-    @router.callback_query(F.data == CB_DG_BOSS_DROP)
+    @router.callback_query(data_startswith(CB_DG_BOSS_DROP))
     async def handle_boss_drop(callback: CallbackQuery) -> None:
         """снимает предложенного босса и возвращает его в колоду"""
         session, chat_id = lookup_chat_session(callback, sessions)
@@ -407,6 +460,11 @@ def create_dangerous_group_router(
             return
         if not await _may_manage(callback, session, chat_id):
             await callback.answer("Убирает ведущий или админ чата.", show_alert=True)
+            return
+        if not _is_current_offer(
+            callback.data, CB_DG_BOSS_DROP, session.pending_boss_id
+        ):
+            await _answer_stale(callback)
             return
         _return_to_pool(session.issued_bosses, session.pending_boss_id)
         session.pending_boss_id = None
@@ -490,6 +548,31 @@ async def _draw_boss(
     return boss
 
 
+def _offer_keyboard(
+    keep_data: str, reroll_data: str, drop_data: str, offer_id: str
+) -> InlineKeyboardMarkup:
+    """клавиатура предложения с привязкой кнопок к конкретной карте"""
+    return create_dg_offer_keyboard(
+        f"{keep_data}:{offer_id}",
+        f"{reroll_data}:{offer_id}",
+        f"{drop_data}:{offer_id}",
+    )
+
+
+def _is_current_offer(data: str | None, action: str, pending_id: str | None) -> bool:
+    """проверяет, что кнопка нажата у актуального предложения партии"""
+    if data is None or pending_id is None:
+        return False
+    return data == f"{action}:{pending_id}"
+
+
+async def _answer_stale(callback: CallbackQuery) -> None:
+    """сообщает, что предложение устарело и кнопки на нём мертвы"""
+    await callback.answer(
+        "Это предложение устарело: работайте с последним.", show_alert=True
+    )
+
+
 def _return_to_pool(issued: set[str], item_id: str | None) -> None:
     """возвращает отвергнутый элемент в пул партии"""
     if item_id is not None:
@@ -523,6 +606,7 @@ def _dump_session(session: DangerousGroup) -> dict[str, Any]:
         "board_chat_id": session.board_chat_id,
         "board_message_id": session.board_message_id,
         "words": session.words,
+        "word_holder_ids": session.word_holder_ids,
         "explainer_ids": session.explainer_ids,
         "explainer_names": session.explainer_names,
         "sent": session.sent,
@@ -542,6 +626,7 @@ def _load_session(data: dict[str, Any]) -> DangerousGroup:
         board_chat_id=data.get("board_chat_id", 0),
         board_message_id=data.get("board_message_id"),
         words=list(data["words"]),
+        word_holder_ids=list(data.get("word_holder_ids", [None, None])),
         explainer_ids=list(data["explainer_ids"]),
         explainer_names=list(data["explainer_names"]),
         sent=list(data["sent"]),
@@ -594,6 +679,20 @@ async def _edit_board(callback: CallbackQuery, session: DangerousGroup) -> None:
             )
         except TelegramBadRequest:
             pass
+
+
+async def _disable_board(bot: Bot | None, session: DangerousGroup) -> None:
+    """снимает клавиатуру со старого табло партии"""
+    if bot is None or session.board_message_id is None or not session.board_chat_id:
+        return
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=session.board_chat_id,
+            message_id=session.board_message_id,
+            reply_markup=None,
+        )
+    except TelegramBadRequest:
+        pass
 
 
 async def _refresh_board(bot: Bot | None, session: DangerousGroup) -> None:

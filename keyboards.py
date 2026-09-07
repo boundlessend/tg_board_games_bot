@@ -434,16 +434,22 @@ def create_bunker_reveal_keyboard(votes_pending: bool) -> InlineKeyboardMarkup:
     )
 
 
-def create_bunker_solo_lobby_keyboard() -> InlineKeyboardMarkup:
-    """создаёт клавиатуру лобби режима «отдельно» игры бункер"""
+def create_bunker_solo_lobby_keyboard(code: str) -> InlineKeyboardMarkup:
+    """создаёт клавиатуру лобби режима «отдельно» игры бункер
+
+    код лобби едет в callback_data, иначе кнопки старого сообщения управляли бы
+    новым лобби того же хоста
+    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=BUNKER_START_TITLE, callback_data=CB_BK_SOLO_START
+                    text=BUNKER_START_TITLE,
+                    callback_data=f"{CB_BK_SOLO_START}:{code}",
                 ),
                 InlineKeyboardButton(
-                    text=BUNKER_CANCEL_TITLE, callback_data=CB_BK_SOLO_CANCEL
+                    text=BUNKER_CANCEL_TITLE,
+                    callback_data=f"{CB_BK_SOLO_CANCEL}:{code}",
                 ),
             ]
         ]

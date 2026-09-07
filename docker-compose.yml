@@ -5,6 +5,12 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "3"
 
+x-hardening: &default-hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
 services:
   bot:
     build: .
@@ -18,6 +24,13 @@ services:
     restart: unless-stopped
     mem_limit: 512m
     logging: *default-logging
+    <<: *default-hardening
+    # база лежит в томе /db и остаётся доступной на запись,
+    # остальная файловая система только для чтения
+    read_only: true
+    tmpfs:
+      # health.py держит здесь отметку живости
+      - /tmp
     volumes:
       - db:/db
 
@@ -36,10 +49,18 @@ services:
     restart: unless-stopped
     mem_limit: 128m
     logging: *default-logging
+    <<: *default-hardening
+    # HEALTHCHECK из образа проверяет отметку живости бота, которой здесь нет
+    healthcheck:
+      disable: true
+    # VACUUM INTO не должен обрываться по SIGKILL на середине снимка
+    stop_grace_period: 120s
     volumes:
       - db:/db
-      - backups:/backups
+      # bind-mount вместо тома: снимки живут рядом с проектом и уносятся
+      # обычным rsync, не завися от docker-демона. каталог должен
+      # принадлежать uid 1000 (пользователь app из образа)
+      - ./backups:/backups
 
 volumes:
   db:
-  backups:

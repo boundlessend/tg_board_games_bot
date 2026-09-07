@@ -324,7 +324,7 @@ async def test_boss_reroll_returns_previous_to_pool(
     first = sessions[GROUP_CHAT].pending_boss_id
     assert sessions[GROUP_CHAT].issued_bosses == {first}
 
-    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_DG_BOSS_REROLL)
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, f"{CB_DG_BOSS_REROLL}:{first}")
     second = sessions[GROUP_CHAT].pending_boss_id
     assert second != first
     # отвергнутый босс снова доступен, занят только текущий
@@ -340,7 +340,8 @@ async def test_dropped_boss_unblocks_the_button(
     )
 
     await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_DG_BOSS)
-    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_DG_BOSS_DROP)
+    offered = sessions[GROUP_CHAT].pending_boss_id
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, f"{CB_DG_BOSS_DROP}:{offered}")
     assert sessions[GROUP_CHAT].pending_boss_id is None
     assert sessions[GROUP_CHAT].issued_bosses == set()
 
@@ -357,7 +358,8 @@ async def test_accepted_boss_updates_the_board(
         storage, dangerous_content
     )
     await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_DG_BOSS)
-    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_DG_BOSS_KEEP)
+    offered = sessions[GROUP_CHAT].pending_boss_id
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, f"{CB_DG_BOSS_KEEP}:{offered}")
 
     assert sessions[GROUP_CHAT].boss_revealed is True
     assert any("Босс: раскрыт" in text for text in recording.sent_to(GROUP_CHAT))

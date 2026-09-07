@@ -1,10 +1,12 @@
-"""состояние партии в бункер: модели, чистые операции и сериализация
+"""состояние партии в бункер: модели, операции над состоянием и сериализация
 
-логика здесь не знает про telegram: роутер только вызывает эти функции и
-рассылает сообщения по их результатам
+операции меняют переданную партию или лобби на месте. логика здесь не знает
+про telegram: роутер только вызывает эти функции и рассылает сообщения по их
+результатам
 """
 
 import random
+import secrets
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -68,6 +70,7 @@ class SoloLobby:
     hands: dict[int, PlayerHand] = field(default_factory=dict)
     intro: str = ""
     delivered: set[int] = field(default_factory=set)
+    intro_delivered: set[int] = field(default_factory=set)
 
 
 def begin_round(session: BunkerSession, round_no: int) -> None:
@@ -161,7 +164,7 @@ def generate_code(existing: set[str]) -> str:
     мало, чтобы код нельзя было подобрать перебором
     """
     for _ in range(_CODE_ATTEMPTS):
-        code = "".join(random.choices(_CODE_ALPHABET, k=_CODE_LENGTH))
+        code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LENGTH))
         if code not in existing:
             return code
     raise RuntimeError("не удалось сгенерировать код лобби бункера")
@@ -212,6 +215,7 @@ def leave_current_lobby(
     lobby.members.pop(user_id, None)
     lobby.hands.pop(user_id, None)
     lobby.delivered.discard(user_id)
+    lobby.intro_delivered.discard(user_id)
     member_lobby.pop(user_id, None)
     return code
 
@@ -290,6 +294,7 @@ def dump_lobby(lobby: SoloLobby) -> dict[str, Any]:
         },
         "intro": lobby.intro,
         "delivered": list(lobby.delivered),
+        "intro_delivered": list(lobby.intro_delivered),
     }
 
 
@@ -304,6 +309,7 @@ def load_lobby(data: dict[str, Any]) -> SoloLobby:
     }
     lobby.intro = data.get("intro", "")
     lobby.delivered = {int(pid) for pid in data.get("delivered", [])}
+    lobby.intro_delivered = {int(pid) for pid in data.get("intro_delivered", [])}
     return lobby
 
 

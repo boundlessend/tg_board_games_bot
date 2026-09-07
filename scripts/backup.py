@@ -7,7 +7,9 @@ VACUUM INTO в каталог бэкапов и оставляет только 
 import argparse
 import asyncio
 import logging
+import sqlite3
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -30,7 +32,13 @@ async def run_backups(
     backup_dir.mkdir(parents=True, exist_ok=True)
     try:
         while True:
-            await make_backup(storage, backup_dir, keep)
+            age = latest_snapshot_age(backup_dir)
+            # без этой проверки частые рестарты контейнера снимали бы бэкап
+            # на каждом старте и вытесняли ротацией всю историю за часы
+            if age is None or age >= interval:
+                await make_backup(storage, backup_dir, keep)
+            else:
+                logger.info("backup_skipped_fresh", extra={"age_seconds": age})
             await asyncio.sleep(interval)
     finally:
         await storage.dispose()
@@ -44,8 +52,11 @@ async def make_backup(
     destination = backup_dir / f"bot-{stamp}.sqlite3"
     try:
         await storage.backup_snapshot(destination)
-    except DatabaseError:
+        if not is_snapshot_intact(destination):
+            raise DatabaseError(f"Снимок {destination} не прошёл проверку целостности.")
+    except (DatabaseError, sqlite3.DatabaseError):
         logger.exception("backup_failed", extra={"destination": str(destination)})
+        destination.unlink(missing_ok=True)
         return None
 
     logger.info("backup_created", extra={"destination": str(destination)})
@@ -53,10 +64,31 @@ async def make_backup(
     return destination
 
 
+def is_snapshot_intact(snapshot: Path) -> bool:
+    """проверяет снимок через PRAGMA integrity_check"""
+    connection = sqlite3.connect(snapshot)
+    try:
+        row: tuple[str] | None = connection.execute("PRAGMA integrity_check").fetchone()
+    finally:
+        connection.close()
+    return row is not None and row[0] == "ok"
+
+
+def latest_snapshot_age(backup_dir: Path) -> float | None:
+    """возраст самого свежего снимка в секундах, None если снимков нет"""
+    snapshots = list(backup_dir.glob("bot-*.sqlite3"))
+    if not snapshots:
+        return None
+    newest = max(snapshot.stat().st_mtime for snapshot in snapshots)
+    return time.time() - newest
+
+
 def prune_backups(backup_dir: Path, keep: int) -> list[Path]:
     """оставляет только keep свежих снимков, возвращает удалённые"""
+    if keep <= 0:
+        raise ValueError(f"keep должен быть положительным, получено {keep}")
     snapshots = sorted(backup_dir.glob("bot-*.sqlite3"))
-    stale = snapshots[:-keep] if keep > 0 else snapshots
+    stale = snapshots[:-keep]
     for path in stale:
         path.unlink(missing_ok=True)
         logger.info("backup_pruned", extra={"path": str(path)})

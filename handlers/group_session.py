@@ -6,7 +6,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+)
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
@@ -54,6 +59,7 @@ from services.picking import pick_word
 logger = logging.getLogger(__name__)
 
 _SCOPE = "group"
+_STALE_MESSAGE = "Это сообщение устарело, откройте меню заново."
 
 
 @dataclass
@@ -121,18 +127,26 @@ def create_group_session_router(
             await callback.answer()
             return
         existing = sessions.get(message.chat.id)
-        if existing is not None and existing.started:
-            await callback.answer(
-                "Партия уже идёт. Сначала «Завершить» или «Отмена».",
-                show_alert=True,
-            )
-            return
+        host_id = callback.from_user.id
+        takeover = False
         if existing is not None:
+            manager = await _may_manage(callback, existing, message.chat.id)
+            if existing.started:
+                if not manager:
+                    await callback.answer(
+                        "Партия уже идёт. Сначала «Завершить» или «Отмена».",
+                        show_alert=True,
+                    )
+                    return
+                takeover = True
+            elif not manager:
+                # лобби уже создано другим: игру сменить можно, роль создателя нет
+                host_id = existing.host_id
             _cancel_timer(existing)
 
         session = GroupSession(
             game=game,
-            host_id=callback.from_user.id,
+            host_id=host_id,
             team_count=MIN_TEAMS,
             turn_seconds=DEFAULT_TURN_SECONDS,
             current_team=0,
@@ -140,20 +154,28 @@ def create_group_session_router(
             explainer_id=None,
         )
         sessions[message.chat.id] = session
-        await edit_menu(
-            callback,
-            _render_lobby(session),
-            create_session_lobby_keyboard(
-                session.team_count, session.turn_seconds, bot_username
-            ),
+        keyboard = create_session_lobby_keyboard(
+            session.team_count, session.turn_seconds, bot_username
         )
+        if takeover:
+            # edit_menu отвечает пустым callback.answer, а тут нужен алерт
+            try:
+                await message.edit_text(_render_lobby(session), reply_markup=keyboard)
+            except TelegramBadRequest:
+                pass
+            await callback.answer(
+                "Прежняя партия снята, её счёт потерян.",
+                show_alert=True,
+            )
+            return
+        await edit_menu(callback, _render_lobby(session), keyboard)
 
     @router.callback_query(data_startswith(CB_GS_JOIN_PREFIX))
     async def handle_join(callback: CallbackQuery) -> None:
         """добавляет игрока в команду в лобби"""
         session, _ = lookup_chat_session(callback, sessions)
         if session is None or session.started:
-            await callback.answer()
+            await callback.answer(_STALE_MESSAGE, show_alert=True)
             return
         team = _parse_team(
             (callback.data or "")[len(CB_GS_JOIN_PREFIX) :], session.team_count
@@ -178,7 +200,7 @@ def create_group_session_router(
         """меняет число команд в лобби (только создатель)"""
         session, _ = lookup_chat_session(callback, sessions)
         if session is None or session.started:
-            await callback.answer()
+            await callback.answer(_STALE_MESSAGE, show_alert=True)
             return
         if callback.from_user.id != session.host_id:
             await callback.answer("Число команд меняет создатель.", show_alert=True)
@@ -208,7 +230,7 @@ def create_group_session_router(
         """меняет время хода в лобби (только создатель)"""
         session, _ = lookup_chat_session(callback, sessions)
         if session is None or session.started:
-            await callback.answer()
+            await callback.answer(_STALE_MESSAGE, show_alert=True)
             return
         if callback.from_user.id != session.host_id:
             await callback.answer("Время хода меняет создатель.", show_alert=True)
@@ -232,7 +254,10 @@ def create_group_session_router(
         """запускает сессию (только создатель)"""
         session, _ = lookup_chat_session(callback, sessions)
         if session is None:
-            await callback.answer()
+            await callback.answer(_STALE_MESSAGE, show_alert=True)
+            return
+        if session.started:
+            await callback.answer("Партия уже идёт.", show_alert=True)
             return
         if callback.from_user.id != session.host_id:
             await callback.answer("Начать может создатель.", show_alert=True)
@@ -260,7 +285,7 @@ def create_group_session_router(
         """отменяет сессию (создатель или администратор чата)"""
         session, chat_id = lookup_chat_session(callback, sessions)
         if session is None or chat_id is None:
-            await callback.answer()
+            await callback.answer(_STALE_MESSAGE, show_alert=True)
             return
         if not await _may_manage(callback, session, chat_id):
             await callback.answer(
@@ -277,7 +302,7 @@ def create_group_session_router(
         """выдаёт слово объясняющему в ЛС и запускает таймер хода"""
         session, chat_id = lookup_chat_session(callback, sessions)
         if session is None or chat_id is None or not session.started:
-            await callback.answer()
+            await callback.answer(_STALE_MESSAGE, show_alert=True)
             return
         user = callback.from_user
         if session.team_of.get(user.id) != session.current_team:
@@ -304,10 +329,12 @@ def create_group_session_router(
         """начисляет очко; следующее слово берут вручную «Слово в ЛС»"""
         session, _ = lookup_chat_session(callback, sessions)
         if session is None or not session.started:
-            await callback.answer()
+            await callback.answer(_STALE_MESSAGE, show_alert=True)
             return
-        if callback.from_user.id not in session.team_of:
-            await callback.answer("Только участники сессии.", show_alert=True)
+        if session.team_of.get(callback.from_user.id) != session.current_team:
+            await callback.answer(
+                "Очко ставит игрок команды, чей ход.", show_alert=True
+            )
             return
         if session.explainer_id is None:
             await callback.answer("Сначала возьми слово.", show_alert=True)
@@ -323,7 +350,7 @@ def create_group_session_router(
         """выдаёт следующее слово без начисления очка"""
         session, _ = lookup_chat_session(callback, sessions)
         if session is None or not session.started:
-            await callback.answer()
+            await callback.answer(_STALE_MESSAGE, show_alert=True)
             return
         if session.team_of.get(callback.from_user.id) != session.current_team:
             await callback.answer(
@@ -346,7 +373,7 @@ def create_group_session_router(
         """меняет слово со штрафом -1 очка текущей команде"""
         session, _ = lookup_chat_session(callback, sessions)
         if session is None or not session.started:
-            await callback.answer()
+            await callback.answer(_STALE_MESSAGE, show_alert=True)
             return
         if session.team_of.get(callback.from_user.id) != session.current_team:
             await callback.answer(
@@ -370,10 +397,12 @@ def create_group_session_router(
         """передаёт ход следующей команде"""
         session, _ = lookup_chat_session(callback, sessions)
         if session is None or not session.started:
-            await callback.answer()
+            await callback.answer(_STALE_MESSAGE, show_alert=True)
             return
-        if callback.from_user.id not in session.team_of:
-            await callback.answer("Только участники сессии.", show_alert=True)
+        if session.team_of.get(callback.from_user.id) != session.current_team:
+            await callback.answer(
+                "Ход передаёт игрок команды, чей сейчас ход.", show_alert=True
+            )
             return
 
         _cancel_timer(session)
@@ -386,7 +415,7 @@ def create_group_session_router(
         """спрашивает подтверждение перед завершением партии"""
         session, _ = lookup_chat_session(callback, sessions)
         if session is None or not session.started:
-            await callback.answer()
+            await callback.answer(_STALE_MESSAGE, show_alert=True)
             return
         if callback.from_user.id not in session.team_of:
             await callback.answer("Только участники сессии.", show_alert=True)
@@ -403,7 +432,7 @@ def create_group_session_router(
         """возвращает игру после отказа от завершения"""
         session, _ = lookup_chat_session(callback, sessions)
         if session is None or not session.started:
-            await callback.answer()
+            await callback.answer(_STALE_MESSAGE, show_alert=True)
             return
         await edit_menu(callback, _render_play(session), create_session_play_keyboard())
 
@@ -412,7 +441,7 @@ def create_group_session_router(
         """завершает сессию и показывает итоговое табло"""
         session, chat_id = lookup_chat_session(callback, sessions)
         if session is None or chat_id is None or not session.started:
-            await callback.answer()
+            await callback.answer(_STALE_MESSAGE, show_alert=True)
             return
         if callback.from_user.id not in session.team_of:
             await callback.answer("Только участники сессии.", show_alert=True)
@@ -542,6 +571,16 @@ async def _deliver_word(
             show_alert=True,
         )
         return False
+    except (TelegramBadRequest, TelegramRetryAfter, TelegramNetworkError):
+        session.issued.discard(word)
+        logger.exception(
+            "word_delivery_failed",
+            extra={"game_id": session.game.game_id, "explainer_id": explainer_id},
+        )
+        await callback.answer(
+            "Слово не дошло в ЛС. Попробуйте ещё раз.", show_alert=True
+        )
+        return False
     return True
 
 
@@ -652,16 +691,17 @@ async def _run_timer(
         session.timer_task = None
         session.current_team = (session.current_team + 1) % session.team_count
         session.explainer_id = None
+        board = _render_play(session)
         try:
             await persist(chat_id)
         except DatabaseError:
             logger.exception("session_persist_failed", extra={"scope": _SCOPE})
-        await send_with_retry(
-            bot,
-            chat_id,
-            "Время вышло! Ход переходит.\n\n" + _render_play(session),
-            create_session_play_keyboard(),
-        )
+    await send_with_retry(
+        bot,
+        chat_id,
+        "Время вышло! Ход переходит.\n\n" + board,
+        create_session_play_keyboard(),
+    )
 
 
 def _is_group(chat_type: str) -> bool:

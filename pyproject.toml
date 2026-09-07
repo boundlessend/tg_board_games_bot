@@ -2,17 +2,20 @@
 name = "tg-board-games"
 version = "5.0.0"
 description = "Telegram-бот с помощниками для настольных игр"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 license = { text = "BSD-3-Clause" }
-# рабочий набор ставится из requirements.txt с точными версиями:
-# он же уходит в docker-образ, чтобы сборка была воспроизводимой
+# прямые зависимости - в requirements.txt, полный набор с хэшами -
+# в requirements.lock: из него собирается docker-образ
 dynamic = ["dependencies"]
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
 
 [tool.ruff]
-target-version = "py312"
+# рантайм и проверка типов идут на 3.14, а форматтеру оставлен py313:
+# на py314 он переписывает except (A, B) в синтаксис PEP 758 без скобок,
+# который mypy пока не разбирает
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
@@ -20,12 +23,14 @@ select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.14"
 strict = true
-ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.coverage.run]
+omit = ["tests/*"]

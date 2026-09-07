@@ -4,6 +4,8 @@ import logging
 import time
 from pathlib import Path
 
+import pytest
+
 from database import SQLiteHistoryStorage
 from health import is_alive, touch_heartbeat
 from logging_setup import StructuredFormatter
@@ -41,11 +43,15 @@ def test_prune_keeps_only_recent_snapshots(tmp_path: Path) -> None:
     ]
 
 
-def test_prune_with_zero_keep_clears_everything(tmp_path: Path) -> None:
-    """keep=0 стирает все снимки, а не оставляет последний"""
-    (tmp_path / "bot-20260101T000000Z.sqlite3").write_bytes(b"x")
-    assert len(prune_backups(tmp_path, keep=0)) == 1
-    assert list(tmp_path.glob("bot-*.sqlite3")) == []
+def test_prune_rejects_non_positive_keep(tmp_path: Path) -> None:
+    """keep=0 это ошибка аргумента, а не команда стереть все снимки"""
+    snapshot = tmp_path / "bot-20260101T000000Z.sqlite3"
+    snapshot.write_bytes(b"x")
+
+    with pytest.raises(ValueError):
+        prune_backups(tmp_path, keep=0)
+
+    assert snapshot.exists()
 
 
 def test_heartbeat_detects_stale_process(tmp_path: Path) -> None:

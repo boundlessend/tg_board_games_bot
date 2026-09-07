@@ -90,7 +90,7 @@ class RecordingSession(BaseSession):
         timeout: int = 30,
         chunk_size: int = 65536,
         raise_for_status: bool = True,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """заглушка потокового чтения"""
         yield b""
 
