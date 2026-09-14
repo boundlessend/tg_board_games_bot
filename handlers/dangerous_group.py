@@ -1,26 +1,28 @@
 import logging
+import zlib
 from dataclasses import dataclass, field
 from typing import Any
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, TelegramObject
 
 from constants import (
     CB_DG_BOSS,
     CB_DG_BOSS_DROP,
     CB_DG_BOSS_KEEP,
     CB_DG_BOSS_REROLL,
+    CB_DG_CARD_REROLL_PREFIX,
     CB_DG_CURSE,
     CB_DG_CURSE_DROP,
     CB_DG_CURSE_KEEP,
     CB_DG_CURSE_REROLL,
     CB_DG_EXPLAIN_PREFIX,
     CB_DG_FINISH,
+    CB_DG_LEGACY_WORD_PREFIX,
     CB_DG_NEXT,
     CB_DG_OPEN,
-    CB_DG_SEND_PREFIX,
-    CB_DG_WORD_PREFIX,
+    CB_DG_SEND,
     DANGEROUS_WORDS_GAME_ID,
     team_label,
 )
@@ -30,6 +32,7 @@ from handlers.common import (
     data_startswith,
     event_chat_id,
     is_chat_manager,
+    is_not_modified,
     lookup_chat_session,
     make_chat_lock_middleware,
     make_chat_persist_middleware,
@@ -39,6 +42,7 @@ from handlers.common import (
 from keyboards import (
     create_dangerous_group_keyboard,
     create_dg_offer_keyboard,
+    create_dg_word_card_keyboard,
 )
 from services.content import Boss, Curse, DangerousWordsContent
 from services.picking import pick_unique, pick_word
@@ -53,11 +57,9 @@ class DangerousGroup:
     """состояние партии «опасные слова»: по слову-дорожке на каждую команду
 
     обе команды играют одновременно. на команду t: words[t] - её секретное
-    слово (соперники тянут его и пишут запретные), explainer_ids[t] -
-    объясняющий этой команды, sent[t] - доставлено ли слово объясняющему
-
-    word_holder_ids[t] - соперник, который вытянул слово команды t: до
-    сброса раунда слово принадлежит ему, а объясняющим за t он стать не может
+    слово, explainer_ids[t] - объясняющий этой команды, sent[t] - доставлено
+    ли слово объясняющему. слово команде t загадывает объясняющий соперников
+    explainer_ids[1 - t]: он его знает, поэтому объяснять за t не может
 
     pending_curse_id и pending_boss_id держат ещё не принятое предложение:
     при рероле оно возвращается в пул, а «Убрать» снимает его целиком
@@ -67,7 +69,6 @@ class DangerousGroup:
     board_chat_id: int = 0
     board_message_id: int | None = None
     words: list[str | None] = field(default_factory=lambda: [None, None])
-    word_holder_ids: list[int | None] = field(default_factory=lambda: [None, None])
     explainer_ids: list[int | None] = field(default_factory=lambda: [None, None])
     explainer_names: list[str | None] = field(default_factory=lambda: [None, None])
     sent: list[bool] = field(default_factory=lambda: [False, False])
@@ -91,9 +92,9 @@ def create_dangerous_group_router(
     async def _persist_chat(chat_id: int) -> None:
         await persist_chat_session(storage, sessions, chat_id)
 
-    router.callback_query.middleware(make_chat_lock_middleware(locks, event_chat_id))
+    router.callback_query.middleware(make_chat_lock_middleware(locks, _session_chat_id))
     router.callback_query.middleware(
-        make_chat_persist_middleware(_persist_chat, _SCOPE, event_chat_id)
+        make_chat_persist_middleware(_persist_chat, _SCOPE, _session_chat_id)
     )
 
     @router.callback_query(F.data == CB_DG_OPEN)
@@ -127,125 +128,162 @@ def create_dangerous_group_router(
 
     @router.callback_query(data_startswith(CB_DG_EXPLAIN_PREFIX))
     async def handle_explain(callback: CallbackQuery) -> None:
-        """назначает объясняющего команды (он объясняет слово своей команде)"""
-        session, _ = lookup_chat_session(callback, sessions)
-        team = _parse_team(callback.data, CB_DG_EXPLAIN_PREFIX)
-        if session is None or team is None:
-            await callback.answer()
-            return
-        if session.word_holder_ids[team] == callback.from_user.id:
-            await callback.answer(
-                f"Ты уже видел слово {team_label(team)}: объясняет другой.",
-                show_alert=True,
-            )
-            return
-        if session.explainer_ids[team] != callback.from_user.id:
-            # у нового объясняющего слова нет - доставку нужно повторить
-            session.sent[team] = False
-        session.explainer_ids[team] = callback.from_user.id
-        session.explainer_names[team] = callback.from_user.full_name
-        await _edit_board(callback, session)
-        await callback.answer(f"Ты объясняешь за {team_label(team)}.")
+        """назначает объясняющего команды и присылает ему слово для соперников
 
-    @router.callback_query(data_startswith(CB_DG_WORD_PREFIX))
-    async def handle_word(callback: CallbackQuery) -> None:
-        """тянет секретное слово команды в ЛС соперникам - писать запретные"""
-        session, _ = lookup_chat_session(callback, sessions)
-        team = _parse_team(callback.data, CB_DG_WORD_PREFIX)
-        if session is None or team is None:
-            await callback.answer()
-            return
-        if callback.from_user.id == session.explainer_ids[team]:
-            await callback.answer(
-                f"Объясняющий {team_label(team)} не тянет слово своей команды.",
-                show_alert=True,
-            )
-            return
-        holder = session.word_holder_ids[team]
-        if holder is not None and holder != callback.from_user.id:
-            await callback.answer(
-                f"Слово {team_label(team)} уже вытянул другой игрок.",
-                show_alert=True,
-            )
-            return
+        объясняющий одной команды загадывает слово другой: оно приходит ему
+        в личку, и его команда пишет к нему запретные. повторное нажатие
+        отдаёт то же слово, а новый объясняющий получает новое: старое видел
+        прежний, который мог нажать не за свою команду
+        """
+        session, chat_id = lookup_chat_session(callback, sessions)
+        team = _parse_team(callback.data, CB_DG_EXPLAIN_PREFIX)
         bot = callback.bot
-        if bot is None:
+        if session is None or chat_id is None or team is None or bot is None:
             await callback.answer()
             return
-        # повторное нажатие тем же игроком возвращает то же слово, а не новое
-        issued = session.words[team]
-        if issued is None:
-            try:
-                pool = list(
-                    dict.fromkeys(
-                        content.words
-                        + await storage.get_custom_words(DANGEROUS_WORDS_GAME_ID)
-                    )
-                )
-            except DatabaseError:
-                logger.exception("database_error", extra={"action": "dg_word"})
-                await callback.answer("Ошибка БД. Попробуй позже.", show_alert=True)
+        rival = 1 - team
+        user_id = callback.from_user.id
+        if session.explainer_ids[rival] == user_id:
+            await callback.answer(
+                f"Ты уже объясняешь за команду {rival + 1} и знаешь слово "
+                f"команды {team + 1}.",
+                show_alert=True,
+            )
+            return
+        repeat = session.explainer_ids[team] == user_id
+        word = session.words[rival]
+        issued = session.issued_words
+        if word is None or not repeat:
+            pool = await _word_pool(callback, content, storage)
+            if pool is None:
                 return
-            word, session.issued_words = pick_word(pool, session.issued_words)
-        else:
-            word = issued
+            word, issued = pick_word(pool, session.issued_words)
         try:
             await bot.send_message(
-                callback.from_user.id,
-                f"Слово {team_label(team)}: {word}\n"
-                "Напиши запретные слова, затем «отправить».",
+                user_id,
+                _riddle_text(rival, word),
+                reply_markup=_riddle_keyboard(chat_id, rival, word),
             )
         except TelegramForbiddenError:
-            if issued is None:
-                # слово не показано - возвращаем его в пул
-                session.issued_words.discard(word)
             await callback.answer(
                 "Не дошло: нужен /start в личке с ботом.", show_alert=True
             )
             return
-        session.word_holder_ids[team] = callback.from_user.id
-        if issued is None:
-            session.words[team] = word
+        session.words[rival] = word
+        session.issued_words = issued
+        if not repeat:
+            # у нового объясняющего своего слова нет, а слово соперников
+            # сменилось: обе дорожки нужно отправить заново
             session.sent[team] = False
+            session.sent[rival] = False
+        session.explainer_ids[team] = user_id
+        session.explainer_names[team] = callback.from_user.full_name
         await _edit_board(callback, session)
-        await callback.answer("Слово в ЛС: напишите запретные.")
+        await callback.answer(
+            f"Ты объясняешь за команду {team + 1}. Слово для соперников - в ЛС."
+        )
 
-    @router.callback_query(data_startswith(CB_DG_SEND_PREFIX))
-    async def handle_send(callback: CallbackQuery) -> None:
-        """отправляет секретное слово команды её объясняющему"""
+    @router.callback_query(data_startswith(CB_DG_LEGACY_WORD_PREFIX))
+    async def handle_legacy_word(callback: CallbackQuery) -> None:
+        """отвечает на «Тянуть слово» со старого табло, поднятого из снапшота"""
         session, _ = lookup_chat_session(callback, sessions)
-        team = _parse_team(callback.data, CB_DG_SEND_PREFIX)
-        if session is None or team is None:
+        if session is not None:
+            await _edit_board(callback, session)
+        await callback.answer(
+            "Кнопка устарела: слово для соперников теперь приходит по «Я объясняющий».",
+            show_alert=True,
+        )
+
+    # префикс ловит и «Отправить 1/2» (dg:send:0/1) со старых табло, поднятых из
+    # снапшота: нажатие отправит слова и перерисует табло новой клавиатурой
+    @router.callback_query(data_startswith(CB_DG_SEND))
+    async def handle_send(callback: CallbackQuery) -> None:
+        """отправляет слова обеих команд их объясняющим одним нажатием
+
+        слова уходят обоим сразу, а объясняют их по очереди. кнопка ждёт
+        готовности обеих дорожек и шлёт только тем, кому слово ещё не дошло
+        """
+        session, _ = lookup_chat_session(callback, sessions)
+        if session is None:
             await callback.answer()
             return
-        word = session.words[team]
-        explainer_id = session.explainer_ids[team]
-        if word is None:
-            await callback.answer(
-                "Сначала вытяните слово этой команды.", show_alert=True
-            )
+        lanes = _ready_lanes(session)
+        if len(lanes) < len(session.words):
+            await callback.answer(_not_ready_text(session), show_alert=True)
             return
-        if explainer_id is None:
-            await callback.answer(
-                f"Объясняющий {team_label(team)} не выбран («объясняю»).",
-                show_alert=True,
-            )
+        if all(session.sent):
+            await callback.answer("Слова уже у объясняющих.", show_alert=True)
             return
         bot = callback.bot
         if bot is None:
             await callback.answer()
             return
-        try:
-            await bot.send_message(explainer_id, f"Слово для объяснения: {word}")
-        except TelegramForbiddenError:
+        failed: list[str] = []
+        for team, word, explainer_id in lanes:
+            if session.sent[team]:
+                continue
+            try:
+                await bot.send_message(explainer_id, _explain_text(word))
+            except TelegramForbiddenError:
+                failed.append(team_label(team))
+                continue
+            session.sent[team] = True
+        await _edit_board(callback, session)
+        if failed:
             await callback.answer(
-                "Объясняющему не дошло: нужен /start в личке с ботом.",
+                f"Не дошло объясняющему ({', '.join(failed)}): "
+                "нужен /start в личке с ботом.",
                 show_alert=True,
             )
             return
-        session.sent[team] = True
-        await _edit_board(callback, session)
-        await callback.answer("Слово ушло объясняющему в ЛС.")
+        await callback.answer("Слова ушли объясняющим в ЛС.")
+
+    @router.callback_query(data_startswith(CB_DG_CARD_REROLL_PREFIX))
+    async def handle_card_reroll(callback: CallbackQuery) -> None:
+        """меняет загаданное слово по кнопке под ним в личке загадывающего
+
+        слово меняется только у него и только до отправки: «Отправить слова»
+        отдаст объясняющему последнее. отвергнутое слово в пул не
+        возвращается - его уже видели
+        """
+        card = _parse_card(callback.data)
+        message = callback.message
+        if card is None or not isinstance(message, Message):
+            await callback.answer()
+            return
+        chat_id, team, tag = card
+        # партии под id карточки может не быть и при живой игре: беседу
+        # перевели в супергруппу, и партия переехала на новый id
+        session = sessions.get(chat_id)
+        if session is None or not _is_current_card(
+            session, team, callback.from_user.id, tag
+        ):
+            await callback.answer(
+                "Карточка устарела: слово уже сменилось или раунд закончился.",
+                show_alert=True,
+            )
+            return
+        if session.sent[team]:
+            await callback.answer(
+                "Слово уже у объясняющего: реролл закрыт.", show_alert=True
+            )
+            return
+        pool = await _word_pool(callback, content, storage)
+        if pool is None:
+            return
+        word, issued = pick_word(pool, session.issued_words)
+        try:
+            await message.edit_text(
+                _riddle_text(team, word),
+                reply_markup=_riddle_keyboard(chat_id, team, word),
+            )
+        except TelegramBadRequest as error:
+            # круг слов пройден и выпало то же слово: карточка и так верна
+            if not is_not_modified(error):
+                raise
+        session.words[team] = word
+        session.issued_words = issued
+        await callback.answer("Новое слово.")
 
     @router.callback_query(F.data == CB_DG_NEXT)
     async def handle_new_round(callback: CallbackQuery) -> None:
@@ -260,12 +298,11 @@ def create_dangerous_group_router(
             )
             return
         session.words = [None, None]
-        session.word_holder_ids = [None, None]
         session.explainer_ids = [None, None]
         session.explainer_names = [None, None]
         session.sent = [False, False]
         await _edit_board(callback, session)
-        await callback.answer("Новый раунд: тяните слова заново.")
+        await callback.answer("Новый раунд: выберите объясняющих заново.")
 
     @router.callback_query(F.data == CB_DG_CURSE)
     async def handle_curse(callback: CallbackQuery) -> None:
@@ -506,6 +543,123 @@ def create_dangerous_group_router(
     return router
 
 
+async def _word_pool(
+    callback: CallbackQuery,
+    content: DangerousWordsContent,
+    storage: SQLiteHistoryStorage,
+) -> list[str] | None:
+    """собирает пул слов партии без дублей, при сбое базы отвечая игроку"""
+    try:
+        custom = await storage.get_custom_words(DANGEROUS_WORDS_GAME_ID)
+    except DatabaseError:
+        logger.exception("database_error", extra={"action": "dg_word"})
+        await callback.answer("Ошибка БД. Попробуй позже.", show_alert=True)
+        return None
+    return list(dict.fromkeys(content.words + custom))
+
+
+def _ready_lanes(session: DangerousGroup) -> list[tuple[int, str, int]]:
+    """дорожки, готовые к отправке: команда, её слово и объясняющий"""
+    return [
+        (team, word, explainer_id)
+        for team, (word, explainer_id) in enumerate(
+            zip(session.words, session.explainer_ids, strict=True)
+        )
+        if word is not None and explainer_id is not None
+    ]
+
+
+def _not_ready_text(session: DangerousGroup) -> str:
+    """объясняет, чего не хватает для отправки слов
+
+    слово команде загадывает объясняющий соперников, поэтому пока не выбраны
+    оба объясняющих, про слова говорить рано
+    """
+    missing = [
+        str(team + 1) for team in range(2) if session.explainer_ids[team] is None
+    ]
+    if not missing:
+        # оба объясняющих есть, а слова нет только у партии из старого снапшота
+        return (
+            "Не всем командам загадано слово: объясняющие, нажмите свою кнопку ещё раз."
+        )
+    return (
+        "Слова уходят обоим объясняющим сразу. "
+        f"Не выбран объясняющий у команды {' и '.join(missing)}."
+    )
+
+
+def _explain_text(word: str) -> str:
+    """текст слова, которое объясняющий объясняет своей команде"""
+    return f"Слово для объяснения: {word}"
+
+
+def _riddle_text(team: int, word: str) -> str:
+    """текст карточки загадывающего: слово для команды соперников"""
+    return (
+        f"Загадай слово команде {team + 1}: {word}\n"
+        "Напишите запретные слова, затем «Отправить слова»."
+    )
+
+
+def _riddle_keyboard(chat_id: int, team: int, word: str) -> InlineKeyboardMarkup:
+    """кнопка реролла, привязанная к партии, команде и конкретному слову"""
+    return create_dg_word_card_keyboard(
+        f"{CB_DG_CARD_REROLL_PREFIX}{chat_id}:{team}:{_word_tag(word)}"
+    )
+
+
+def _word_tag(word: str) -> str:
+    """короткая метка слова для кнопки: callback_data ограничена 64 байтами
+
+    по метке старые карточки отличаются от карточки текущего слова
+    """
+    return f"{zlib.crc32(word.encode()):08x}"
+
+
+def _parse_card(data: str | None) -> tuple[int, int, str] | None:
+    """разбирает кнопку карточки: чат партии, команда и метка слова"""
+    if data is None or not data.startswith(CB_DG_CARD_REROLL_PREFIX):
+        return None
+    parts = data[len(CB_DG_CARD_REROLL_PREFIX) :].split(":")
+    if len(parts) != 3:
+        return None
+    chat_part, team_part, tag = parts
+    team = _parse_team(team_part, "")
+    try:
+        chat_id = int(chat_part)
+    except ValueError:
+        return None
+    if team is None:
+        return None
+    return chat_id, team, tag
+
+
+def _is_current_card(
+    session: DangerousGroup, team: int, user_id: int, tag: str
+) -> bool:
+    """карточка жива, пока слово загадывает этот игрок и оно не сменилось"""
+    word = session.words[team]
+    return (
+        word is not None
+        and session.explainer_ids[1 - team] == user_id
+        and _word_tag(word) == tag
+    )
+
+
+def _session_chat_id(event: TelegramObject) -> int | None:
+    """чат партии события: карточка слова лежит в личке, а партия - в беседе
+
+    блокировка и снапшот должны браться по беседе, иначе реролл из лички
+    разошёлся бы с нажатиями на табло и не попал бы в снапшот
+    """
+    if isinstance(event, CallbackQuery):
+        card = _parse_card(event.data)
+        if card is not None:
+            return card[0]
+    return event_chat_id(event)
+
+
 async def _draw_curse(
     callback: CallbackQuery,
     session: DangerousGroup,
@@ -610,7 +764,6 @@ def _dump_session(session: DangerousGroup) -> dict[str, Any]:
         "board_chat_id": session.board_chat_id,
         "board_message_id": session.board_message_id,
         "words": session.words,
-        "word_holder_ids": session.word_holder_ids,
         "explainer_ids": session.explainer_ids,
         "explainer_names": session.explainer_names,
         "sent": session.sent,
@@ -630,7 +783,6 @@ def _load_session(data: dict[str, Any]) -> DangerousGroup:
         board_chat_id=data.get("board_chat_id", 0),
         board_message_id=data.get("board_message_id"),
         words=list(data["words"]),
-        word_holder_ids=list(data.get("word_holder_ids", [None, None])),
         explainer_ids=list(data["explainer_ids"]),
         explainer_names=list(data["explainer_names"]),
         sent=list(data["sent"]),
@@ -734,12 +886,13 @@ def _render_board(session: DangerousGroup) -> str:
     boss = "раскрыт" if session.boss_revealed else "в колоде (финал)"
     lines = [
         "Опасные слова - обе команды играют одновременно.",
-        "Соперники тянут секретное слово команды (придёт им в ЛС) и пишут "
-        "запретные; объясняющий команды объясняет его своим.",
+        "Объясняющий загадывает слово соперникам (придёт ему в ЛС), его "
+        "команда пишет запретные. «Отправить слова» раздаёт слова обоим "
+        "объясняющим, объясняют по очереди.",
         "",
     ]
     for team in range(2):
-        word_state = "взято" if session.words[team] else "не взято"
+        word_state = "загадано" if session.words[team] else "не загадано"
         explainer = session.explainer_names[team] or "не выбран"
         sent_state = "отправлено" if session.sent[team] else "не отправлено"
         lines.append(

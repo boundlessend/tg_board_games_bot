@@ -45,8 +45,7 @@ from constants import (
     CB_DG_FINISH,
     CB_DG_NEXT,
     CB_DG_OPEN,
-    CB_DG_SEND_PREFIX,
-    CB_DG_WORD_PREFIX,
+    CB_DG_SEND,
     CB_FORGET_ME_NO,
     CB_FORGET_ME_YES,
     CB_GS_CANCEL,
@@ -77,6 +76,7 @@ from constants import (
     DG_KEEP_TITLE,
     DG_NEW_ROUND_TITLE,
     DG_REROLL_TITLE,
+    DG_SEND_TITLE,
     FORGET_ME_NO_TITLE,
     FORGET_ME_YES_TITLE,
     MAX_TEAMS,
@@ -154,20 +154,7 @@ def create_dangerous_group_keyboard() -> InlineKeyboardMarkup:
             )
             for team in range(2)
         ],
-        [
-            InlineKeyboardButton(
-                text=f"Тянуть слово {team + 1}",
-                callback_data=CB_DG_WORD_PREFIX + str(team),
-            )
-            for team in range(2)
-        ],
-        [
-            InlineKeyboardButton(
-                text=f"Отправить {team + 1}",
-                callback_data=CB_DG_SEND_PREFIX + str(team),
-            )
-            for team in range(2)
-        ],
+        [InlineKeyboardButton(text=DG_SEND_TITLE, callback_data=CB_DG_SEND)],
     ]
     rows.append(
         [InlineKeyboardButton(text=DG_NEW_ROUND_TITLE, callback_data=CB_DG_NEXT)]
@@ -199,6 +186,15 @@ def create_dg_offer_keyboard(
                 InlineKeyboardButton(text=DG_REROLL_TITLE, callback_data=reroll_data),
                 InlineKeyboardButton(text=DG_DROP_TITLE, callback_data=drop_data),
             ]
+        ]
+    )
+
+
+def create_dg_word_card_keyboard(reroll_data: str) -> InlineKeyboardMarkup:
+    """создаёт кнопку реролла под словом в личке объясняющего"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=DG_REROLL_TITLE, callback_data=reroll_data)]
         ]
     )
 

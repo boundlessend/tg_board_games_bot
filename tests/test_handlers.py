@@ -30,8 +30,7 @@ from constants import (
     CB_DG_CURSE_REROLL,
     CB_DG_EXPLAIN_PREFIX,
     CB_DG_OPEN,
-    CB_DG_SEND_PREFIX,
-    CB_DG_WORD_PREFIX,
+    CB_DG_SEND,
     CB_FORGET_ME_YES,
     CB_GS_CANCEL,
     CB_GS_FINISH,
@@ -414,6 +413,115 @@ async def _dangerous_game(
     return dispatcher, bot, recording, sessions
 
 
+async def _deal_both_lanes(dispatcher: Dispatcher, bot: Bot) -> None:
+    """выбирает обоих объясняющих и отправляет слова"""
+    await _press(dispatcher, bot, GROUP_CHAT, PLAYER_TWO, CB_DG_EXPLAIN_PREFIX + "0")
+    await _press(dispatcher, bot, GROUP_CHAT, STRANGER, CB_DG_EXPLAIN_PREFIX + "1")
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_DG_SEND)
+
+
+def _last_card_button(recording: RecordingSession, riddler_id: int) -> str:
+    """callback_data кнопки реролла на последней карточке загадывающего"""
+    cards = [
+        payload
+        for name, payload in recording.calls
+        if name in {"SendMessage", "EditMessageText"}
+        and payload.get("chat_id") == riddler_id
+        and "reply_markup" in payload
+    ]
+    return str(cards[-1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"])
+
+
+async def test_explainer_riddles_rival_word_and_send_waits_for_both(
+    storage: SQLiteHistoryStorage, dangerous_content: DangerousWordsContent
+) -> None:
+    """объясняющий сразу получает слово соперников, а слова уходят обоим разом"""
+    dispatcher, bot, recording, sessions = await _dangerous_game(
+        storage, dangerous_content
+    )
+    # PLAYER_TWO по ошибке жмёт кнопку чужой команды и видит слово команды 2
+    await _press(dispatcher, bot, GROUP_CHAT, PLAYER_TWO, CB_DG_EXPLAIN_PREFIX + "0")
+    session = sessions[GROUP_CHAT]
+    seen_word = session.words[1]
+    assert session.words[0] is None
+    assert recording.sent_to(PLAYER_TWO)[-1].startswith(
+        f"Загадай слово команде 2: {seen_word}"
+    )
+
+    # пока он загадывает слово команды 2, объяснять за неё нельзя
+    await _press(dispatcher, bot, GROUP_CHAT, PLAYER_TWO, CB_DG_EXPLAIN_PREFIX + "1")
+    assert session.explainer_ids[1] is None
+
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_DG_SEND)
+    assert session.sent == [False, False]
+    assert "Не выбран объясняющий у команды 2" in recording.alerts()[-1]
+
+    # новый объясняющий получает новое слово: засвеченное уходит из игры
+    await _press(dispatcher, bot, GROUP_CHAT, STRANGER, CB_DG_EXPLAIN_PREFIX + "0")
+    assert session.words[1] not in (None, seen_word)
+
+    await _press(dispatcher, bot, GROUP_CHAT, PLAYER_TWO, CB_DG_EXPLAIN_PREFIX + "1")
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_DG_SEND)
+
+    assert session.sent == [True, True]
+    assert recording.sent_to(PLAYER_TWO)[-2].startswith(
+        f"Загадай слово команде 1: {session.words[0]}"
+    )
+    assert recording.sent_to(PLAYER_TWO)[-1] == (
+        f"Слово для объяснения: {session.words[1]}"
+    )
+    assert recording.sent_to(STRANGER)[-1] == (
+        f"Слово для объяснения: {session.words[0]}"
+    )
+
+
+async def test_riddler_rerolls_word_only_for_himself_until_sent(
+    storage: SQLiteHistoryStorage, dangerous_content: DangerousWordsContent
+) -> None:
+    """реролл меняет слово только у загадывающего и закрывается после отправки"""
+    dispatcher, bot, recording, sessions = await _dangerous_game(
+        storage, dangerous_content
+    )
+    await _press(dispatcher, bot, GROUP_CHAT, PLAYER_TWO, CB_DG_EXPLAIN_PREFIX + "0")
+    await _press(dispatcher, bot, GROUP_CHAT, STRANGER, CB_DG_EXPLAIN_PREFIX + "1")
+    session = sessions[GROUP_CHAT]
+    old_word = session.words[0]
+    # STRANGER объясняет за команду 2 и загадывает слово команде 1
+    card = _last_card_button(recording, STRANGER)
+
+    await _press(dispatcher, bot, PLAYER_TWO, PLAYER_TWO, card)
+    assert session.words[0] == old_word
+
+    sends_before = recording.method_names().count("SendMessage")
+    await _press(dispatcher, bot, STRANGER, STRANGER, card)
+    new_word = session.words[0]
+    assert new_word not in (None, old_word)
+    assert recording.sent_to(STRANGER)[-1].startswith(
+        f"Загадай слово команде 1: {new_word}"
+    )
+    # слово меняется на той же карточке, никому ничего не уходит
+    assert recording.method_names().count("SendMessage") == sends_before
+
+    # кнопка со старым словом мертва: повторное нажатие слово не меняет
+    await _press(dispatcher, bot, STRANGER, STRANGER, card)
+    assert session.words[0] == new_word
+    assert "устарела" in recording.alerts()[-1]
+
+    # реролл из лички попадает в снапшот беседы
+    restored: dict[int, DangerousGroup] = {}
+    await restore_dangerous_sessions(storage, restored)
+    assert restored[GROUP_CHAT].words[0] == new_word
+
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_DG_SEND)
+    assert recording.sent_to(PLAYER_TWO)[-1] == f"Слово для объяснения: {new_word}"
+
+    await _press(
+        dispatcher, bot, STRANGER, STRANGER, _last_card_button(recording, STRANGER)
+    )
+    assert session.words[0] == new_word
+    assert "реролл закрыт" in recording.alerts()[-1]
+
+
 async def test_boss_reroll_returns_previous_to_pool(
     storage: SQLiteHistoryStorage, dangerous_content: DangerousWordsContent
 ) -> None:
@@ -525,22 +633,18 @@ async def test_stale_curse_offer_is_ignored(
 async def test_dangerous_game_survives_restart(
     storage: SQLiteHistoryStorage, dangerous_content: DangerousWordsContent
 ) -> None:
-    """снапшот партии восстанавливает слово, объясняющего и его держателя"""
+    """снапшот партии восстанавливает слова, объясняющих и отметку отправки"""
     dispatcher, bot, _, sessions = await _dangerous_game(storage, dangerous_content)
-
-    await _press(dispatcher, bot, GROUP_CHAT, PLAYER_TWO, CB_DG_EXPLAIN_PREFIX + "0")
-    await _press(dispatcher, bot, GROUP_CHAT, STRANGER, CB_DG_WORD_PREFIX + "0")
-    await _press(dispatcher, bot, GROUP_CHAT, STRANGER, CB_DG_SEND_PREFIX + "0")
+    await _deal_both_lanes(dispatcher, bot)
 
     restored: dict[int, DangerousGroup] = {}
     await restore_dangerous_sessions(storage, restored)
 
     session = restored[GROUP_CHAT]
-    assert session.words[0] == sessions[GROUP_CHAT].words[0]
+    assert session.words == sessions[GROUP_CHAT].words
     assert session.issued_words == sessions[GROUP_CHAT].issued_words
-    assert session.explainer_ids[0] == PLAYER_TWO
-    assert session.word_holder_ids[0] == STRANGER
-    assert session.sent[0] is True
+    assert session.explainer_ids == [PLAYER_TWO, STRANGER]
+    assert session.sent == [True, True]
 
 
 async def test_bunker_lobby_marks_unreachable_players(
