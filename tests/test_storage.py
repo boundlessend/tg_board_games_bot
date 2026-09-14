@@ -125,6 +125,20 @@ async def test_custom_content_roundtrip(storage: SQLiteHistoryStorage) -> None:
     assert await storage.delete_custom_boss(int(bosses[0].id.removeprefix("cb_")))
 
 
+async def test_chat_used_words_follow_the_chat(storage: SQLiteHistoryStorage) -> None:
+    """история слов беседы копится без дублей и переезжает вместе с чатом"""
+    await storage.mark_chat_word_used(-1, "кот")
+    await storage.mark_chat_word_used(-1, "кот")
+    await storage.mark_chat_word_used(-1, "пёс")
+    await storage.mark_chat_word_used(-2, "кит")
+    assert await storage.get_chat_used_words(-1) == {"кот", "пёс"}
+
+    await storage.move_chat_used_words(-1, -100)
+    assert await storage.get_chat_used_words(-1) == set()
+    assert await storage.get_chat_used_words(-100) == {"кот", "пёс"}
+    assert await storage.get_chat_used_words(-2) == {"кит"}
+
+
 async def test_bulk_import_skips_duplicates(storage: SQLiteHistoryStorage) -> None:
     """массовый импорт добавляет только новые слова"""
     added = await storage.add_custom_words_bulk("alias", ["раз", "два", "раз"])

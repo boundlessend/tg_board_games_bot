@@ -20,6 +20,7 @@ from sqlalchemy import (
     delete,
     func,
     insert,
+    literal,
     select,
     text,
 )
@@ -114,6 +115,16 @@ favorites_table = Table(
     Column("telegram_id", BigInteger, nullable=False),
     Column("word", String, nullable=False),
     UniqueConstraint("telegram_id", "word"),
+)
+
+# слова «Опасных слов», уже выпадавшие в беседе: история живёт не партию, а
+# весь чат, поэтому хранится отдельно от снапшота сессии
+chat_used_words_table = Table(
+    "chat_used_words",
+    metadata,
+    Column("chat_id", BigInteger, primary_key=True),
+    Column("word", String, primary_key=True),
+    Column("used_at", String, nullable=True),
 )
 
 session_state_table = Table(
@@ -457,6 +468,66 @@ class SQLiteHistoryStorage:
             ) from error
 
         return [str(row[0]) for row in rows]
+
+    async def get_chat_used_words(self, chat_id: int) -> set[str]:
+        """возвращает слова «Опасных слов», уже выпадавшие в беседе"""
+        statement = select(chat_used_words_table.c.word).where(
+            chat_used_words_table.c.chat_id == chat_id
+        )
+        try:
+            async with self._engine.connect() as connection:
+                result = await connection.execute(statement)
+                rows = result.fetchall()
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                f"Не удалось получить выпавшие слова беседы chat_id={chat_id}."
+            ) from error
+
+        return {str(row[0]) for row in rows}
+
+    async def mark_chat_word_used(self, chat_id: int, word: str) -> None:
+        """отмечает слово выпавшим в беседе; повторная отметка ничего не меняет"""
+        statement = (
+            sqlite_insert(chat_used_words_table)
+            .values(chat_id=chat_id, word=word, used_at=_now_iso())
+            .on_conflict_do_nothing(
+                index_elements=[
+                    chat_used_words_table.c.chat_id,
+                    chat_used_words_table.c.word,
+                ]
+            )
+        )
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(statement)
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                f"Не удалось отметить слово выпавшим: chat_id={chat_id}, word={word}."
+            ) from error
+
+    async def move_chat_used_words(self, old_chat_id: int, new_chat_id: int) -> None:
+        """переносит историю слов беседы на новый id после апгрейда в супергруппу"""
+        columns = chat_used_words_table.c
+        copy = (
+            sqlite_insert(chat_used_words_table)
+            .from_select(
+                [columns.chat_id, columns.word, columns.used_at],
+                select(
+                    literal(new_chat_id, BigInteger), columns.word, columns.used_at
+                ).where(columns.chat_id == old_chat_id),
+            )
+            .on_conflict_do_nothing(index_elements=[columns.chat_id, columns.word])
+        )
+        drop = delete(chat_used_words_table).where(columns.chat_id == old_chat_id)
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(copy)
+                await connection.execute(drop)
+        except SQLAlchemyError as error:
+            raise DatabaseError(
+                "Не удалось перенести выпавшие слова беседы: "
+                f"chat_id={old_chat_id} -> {new_chat_id}."
+            ) from error
 
     async def add_custom_curse(self, title: str, description: str) -> None:
         """добавляет пользовательское проклятье, отвергая полный дубль"""
