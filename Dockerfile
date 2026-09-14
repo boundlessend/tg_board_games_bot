@@ -8,6 +8,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# официальный образ отстаёт от security-обновлений Debian: без них Trivy
+# находит в системных пакетах уязвимости, для которых исправление уже вышло
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.lock .
 # pip после установки не нужен, а его вендоренные копии msgpack и setuptools
 # тянут за собой чужие уязвимости: в рантайме образ ничего не доставляет
