@@ -44,6 +44,7 @@ from handlers.bunker_render import (
 from handlers.common import (
     ChatLocks,
     data_startswith,
+    event_chat_id,
     is_chat_manager,
     lookup_chat_session,
     make_chat_lock_middleware,
@@ -103,8 +104,8 @@ def create_bunker_router(
     router = Router()
     locks = ChatLocks()
 
-    router.callback_query.middleware(make_chat_lock_middleware(locks))
-    router.message.middleware(make_chat_lock_middleware(locks))
+    router.callback_query.middleware(make_chat_lock_middleware(locks, event_chat_id))
+    router.message.middleware(make_chat_lock_middleware(locks, event_chat_id))
 
     async def _save_session(chat_id: int) -> None:
         """точечно пишет снапшот партии одного чата"""

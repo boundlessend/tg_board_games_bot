@@ -149,7 +149,9 @@ async def restore_sessions[K, S](
 
 
 def make_chat_persist_middleware(
-    persist_chat: Callable[[int], Awaitable[None]], scope: str
+    persist_chat: Callable[[int], Awaitable[None]],
+    scope: str,
+    chat_id_of: Callable[[TelegramObject], int | None],
 ) -> _Middleware:
     """строит middleware: сохраняет снапшот сессии чата события после обработки
 
@@ -163,7 +165,7 @@ def make_chat_persist_middleware(
         try:
             return await handler(event, data)
         finally:
-            chat_id = _event_chat_id(event)
+            chat_id = chat_id_of(event)
             if chat_id is not None:
                 try:
                     await persist_chat(chat_id)
@@ -212,13 +214,15 @@ class ChatLocks:
         return len(self._entries)
 
 
-def make_chat_lock_middleware(locks: ChatLocks) -> _Middleware:
+def make_chat_lock_middleware(
+    locks: ChatLocks, chat_id_of: Callable[[TelegramObject], int | None]
+) -> _Middleware:
     """строит middleware: сериализует обработку событий одного чата блокировкой"""
 
     async def middleware(
         handler: _Handler, event: TelegramObject, data: dict[str, Any]
     ) -> Any:
-        chat_id = _event_chat_id(event)
+        chat_id = chat_id_of(event)
         if chat_id is None:
             return await handler(event, data)
         async with locks.hold(chat_id):
@@ -285,7 +289,7 @@ def _unreachable(last_error: Exception | None) -> Exception:
     return last_error
 
 
-def _event_chat_id(event: TelegramObject) -> int | None:
+def event_chat_id(event: TelegramObject) -> int | None:
     """возвращает id чата события (сообщение или callback)"""
     if isinstance(event, CallbackQuery):
         message = event.message

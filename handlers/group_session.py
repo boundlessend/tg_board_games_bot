@@ -39,6 +39,7 @@ from database import DatabaseError, SQLiteHistoryStorage
 from handlers.common import (
     ChatLocks,
     data_startswith,
+    event_chat_id,
     is_chat_manager,
     is_not_modified,
     lookup_chat_session,
@@ -98,9 +99,9 @@ def create_group_session_router(
     async def _persist_chat(chat_id: int) -> None:
         await persist_chat_session(storage, sessions, chat_id)
 
-    router.callback_query.middleware(make_chat_lock_middleware(locks))
+    router.callback_query.middleware(make_chat_lock_middleware(locks, event_chat_id))
     router.callback_query.middleware(
-        make_chat_persist_middleware(_persist_chat, _SCOPE)
+        make_chat_persist_middleware(_persist_chat, _SCOPE, event_chat_id)
     )
 
     @router.message(Command("play"))
