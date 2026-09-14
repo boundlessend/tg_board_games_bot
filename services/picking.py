@@ -1,13 +1,14 @@
 """выбор игрового контента без повторов
 
-механизма два, и они не взаимозаменяемы:
+механизма три, и они не взаимозаменяемы:
 
 - select_unique_item - персональная история в SQLite, круг переживает
   перезапуск бота; используется в личных играх, где выдача привязана к
   telegram_id;
 - pick_unique / pick_word - история в памяти сессии, живёт ровно партию и
-  общая для всех её участников; используется в групповых играх, где круг
-  считается на чат, а не на человека.
+  общая для всех её участников; при исчерпании круг начинается заново;
+- pick_fresh_word - история беседы в SQLite без нового круга: выпавшее слово
+  больше не выпадает никогда; используется в «Опасных словах».
 """
 
 import random
@@ -73,6 +74,14 @@ def pick_word(pool: list[str], issued: set[str]) -> tuple[str, set[str]]:
     if chosen is None:
         raise ValueError("пул слов пуст")
     return chosen
+
+
+def pick_fresh_word(pool: list[str], used: set[str]) -> str | None:
+    """выбирает слово, которое ещё не выпадало, или None, если таких нет"""
+    fresh = [word for word in pool if word not in used]
+    if len(fresh) == 0:
+        return None
+    return random.choice(fresh)
 
 
 def identity(value: str) -> str:

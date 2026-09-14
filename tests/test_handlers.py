@@ -25,10 +25,12 @@ from constants import (
     CB_DG_BOSS_DROP,
     CB_DG_BOSS_KEEP,
     CB_DG_BOSS_REROLL,
+    CB_DG_CATEGORY_PREFIX,
     CB_DG_CURSE,
     CB_DG_CURSE_KEEP,
     CB_DG_CURSE_REROLL,
     CB_DG_EXPLAIN_PREFIX,
+    CB_DG_FINISH,
     CB_DG_OPEN,
     CB_DG_SEND,
     CB_FORGET_ME_YES,
@@ -44,6 +46,9 @@ from constants import (
     CB_GS_SKIP,
     CB_GS_START,
     CB_GS_WORD,
+    DANGEROUS_WORDS_GAME_ID,
+    DG_MIX_CATEGORY,
+    DG_WORD_CATEGORIES,
 )
 from database import SQLiteHistoryStorage
 from handlers.bunker import create_bunker_router
@@ -410,7 +415,83 @@ async def _dangerous_game(
     dispatcher = Dispatcher()
     dispatcher.include_router(create_dangerous_group_router(content, storage, sessions))
     await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_DG_OPEN)
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_DG_CATEGORY_PREFIX + "nature")
     return dispatcher, bot, recording, sessions
+
+
+async def test_words_never_repeat_in_chat_and_fall_back_to_mix(
+    storage: SQLiteHistoryStorage, dangerous_content: DangerousWordsContent
+) -> None:
+    """выпавшее слово не возвращается и в новой партии, пустая категория уходит вперемешку"""
+    content = DangerousWordsContent(
+        categories={
+            "nature": ["кот"],
+            "fantasy": ["дракон"],
+            "science": ["робот"],
+            "culture": ["гитара"],
+            "people": ["друг"],
+        },
+        curses=dangerous_content.curses,
+        bosses=dangerous_content.bosses,
+    )
+    await storage.add_custom_word(DANGEROUS_WORDS_GAME_ID, "шарик")
+    drawn: list[str] = []
+    for game in range(4):
+        dispatcher, bot, recording, sessions = await _dangerous_game(storage, content)
+        await _press(
+            dispatcher, bot, GROUP_CHAT, PLAYER_TWO, CB_DG_EXPLAIN_PREFIX + "0"
+        )
+        await _press(dispatcher, bot, GROUP_CHAT, STRANGER, CB_DG_EXPLAIN_PREFIX + "1")
+        drawn += [word for word in sessions[GROUP_CHAT].words if word is not None]
+        if game == 0:
+            # слово админа живёт только вперемешку, поэтому из природы - «кот»
+            assert sessions[GROUP_CHAT].words[1] == "кот"
+            assert sessions[GROUP_CHAT].category == DG_MIX_CATEGORY
+            assert any("дальше всё вперемешку" in text for text in recording.alerts())
+        if game == 3:
+            # шесть слов разошлись за три партии, седьмого взять неоткуда
+            assert any("выпали все слова" in text for text in recording.alerts())
+        await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_DG_FINISH)
+
+    assert sorted(drawn) == sorted(
+        ["кот", "дракон", "робот", "гитара", "друг", "шарик"]
+    )
+    assert await storage.get_chat_used_words(GROUP_CHAT) == set(drawn)
+
+
+async def test_category_picker_starts_the_game_once(
+    storage: SQLiteHistoryStorage, dangerous_content: DangerousWordsContent
+) -> None:
+    """без партии бот спрашивает категорию, а второй выбор не трогает идущую игру"""
+    recording = RecordingSession()
+    bot = make_bot(recording)
+    sessions: dict[int, DangerousGroup] = {}
+    dispatcher = Dispatcher()
+    dispatcher.include_router(
+        create_dangerous_group_router(dangerous_content, storage, sessions)
+    )
+
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_DG_OPEN)
+    assert sessions == {}
+    picker = next(
+        payload
+        for name, payload in reversed(recording.calls)
+        if name == "SendMessage" and payload.get("chat_id") == GROUP_CHAT
+    )
+    assert [
+        row[0]["callback_data"] for row in picker["reply_markup"]["inline_keyboard"]
+    ] == [CB_DG_CATEGORY_PREFIX + key for key in (*DG_WORD_CATEGORIES, DG_MIX_CATEGORY)]
+
+    await _press(dispatcher, bot, GROUP_CHAT, HOST, CB_DG_CATEGORY_PREFIX + "people")
+    await _press(
+        dispatcher, bot, GROUP_CHAT, STRANGER, CB_DG_CATEGORY_PREFIX + "nature"
+    )
+    session = sessions[GROUP_CHAT]
+    assert (session.host_id, session.category) == (HOST, "people")
+    assert any(
+        "Категория: Люди и отношения." in text for text in recording.sent_to(GROUP_CHAT)
+    )
+    assert "Партия уже идёт" in recording.alerts()[-1]
 
 
 async def _deal_both_lanes(dispatcher: Dispatcher, bot: Bot) -> None:
@@ -642,7 +723,7 @@ async def test_dangerous_game_survives_restart(
 
     session = restored[GROUP_CHAT]
     assert session.words == sessions[GROUP_CHAT].words
-    assert session.issued_words == sessions[GROUP_CHAT].issued_words
+    assert session.category == "nature"
     assert session.explainer_ids == [PLAYER_TWO, STRANGER]
     assert session.sent == [True, True]
 

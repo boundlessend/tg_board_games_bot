@@ -40,6 +40,7 @@ from constants import (
     CB_BK_VOTE_START,
     CB_BK_VOTE_TALLY,
     CB_DG_BOSS,
+    CB_DG_CATEGORY_PREFIX,
     CB_DG_CURSE,
     CB_DG_EXPLAIN_PREFIX,
     CB_DG_FINISH,
@@ -74,9 +75,12 @@ from constants import (
     DG_DROP_TITLE,
     DG_FINISH_TITLE,
     DG_KEEP_TITLE,
+    DG_MIX_CATEGORY,
+    DG_MIX_TITLE,
     DG_NEW_ROUND_TITLE,
     DG_REROLL_TITLE,
     DG_SEND_TITLE,
+    DG_WORD_CATEGORIES,
     FORGET_ME_NO_TITLE,
     FORGET_ME_YES_TITLE,
     MAX_TEAMS,
@@ -142,6 +146,21 @@ def create_group_menu_keyboard(
         [InlineKeyboardButton(text=BUNKER_GAME_TITLE, callback_data=CB_BK_OPEN)]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def create_dg_category_keyboard() -> InlineKeyboardMarkup:
+    """создаёт выбор категории слов перед партией «опасные слова»"""
+    options = [*DG_WORD_CATEGORIES.items(), (DG_MIX_CATEGORY, DG_MIX_TITLE)]
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=title, callback_data=CB_DG_CATEGORY_PREFIX + key
+                )
+            ]
+            for key, title in options
+        ]
+    )
 
 
 def create_dangerous_group_keyboard() -> InlineKeyboardMarkup:

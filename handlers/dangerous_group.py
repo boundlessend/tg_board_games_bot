@@ -13,6 +13,7 @@ from constants import (
     CB_DG_BOSS_KEEP,
     CB_DG_BOSS_REROLL,
     CB_DG_CARD_REROLL_PREFIX,
+    CB_DG_CATEGORY_PREFIX,
     CB_DG_CURSE,
     CB_DG_CURSE_DROP,
     CB_DG_CURSE_KEEP,
@@ -24,6 +25,9 @@ from constants import (
     CB_DG_OPEN,
     CB_DG_SEND,
     DANGEROUS_WORDS_GAME_ID,
+    DG_MIX_CATEGORY,
+    DG_WORD_CATEGORIES,
+    dg_category_title,
     team_label,
 )
 from database import DatabaseError, SQLiteHistoryStorage
@@ -32,7 +36,6 @@ from handlers.common import (
     data_startswith,
     event_chat_id,
     is_chat_manager,
-    is_not_modified,
     lookup_chat_session,
     make_chat_lock_middleware,
     make_chat_persist_middleware,
@@ -41,11 +44,12 @@ from handlers.common import (
 )
 from keyboards import (
     create_dangerous_group_keyboard,
+    create_dg_category_keyboard,
     create_dg_offer_keyboard,
     create_dg_word_card_keyboard,
 )
-from services.content import Boss, Curse, DangerousWordsContent
-from services.picking import pick_unique, pick_word
+from services.content import Boss, Curse, DangerousWordsContent, all_dangerous_words
+from services.picking import pick_fresh_word, pick_unique
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +65,15 @@ class DangerousGroup:
     ли слово объясняющему. слово команде t загадывает объясняющий соперников
     explainer_ids[1 - t]: он его знает, поэтому объяснять за t не может
 
+    category - ключ DG_WORD_CATEGORIES или DG_MIX_CATEGORY; выпавшие слова
+    хранятся не в партии, а в истории беседы в базе
+
     pending_curse_id и pending_boss_id держат ещё не принятое предложение:
     при рероле оно возвращается в пул, а «Убрать» снимает его целиком
     """
 
     host_id: int
+    category: str
     board_chat_id: int = 0
     board_message_id: int | None = None
     words: list[str | None] = field(default_factory=lambda: [None, None])
@@ -75,7 +83,6 @@ class DangerousGroup:
     boss_revealed: bool = False
     pending_curse_id: str | None = None
     pending_boss_id: str | None = None
-    issued_words: set[str] = field(default_factory=set)
     issued_curses: set[str] = field(default_factory=set)
     issued_bosses: set[str] = field(default_factory=set)
 
@@ -99,7 +106,7 @@ def create_dangerous_group_router(
 
     @router.callback_query(F.data == CB_DG_OPEN)
     async def handle_open(callback: CallbackQuery) -> None:
-        """открывает поле командной партии в беседе"""
+        """открывает партию в беседе: без идущей партии сначала выбор категории"""
         message = callback.message
         if not isinstance(message, Message):
             await callback.answer()
@@ -111,20 +118,48 @@ def create_dangerous_group_router(
             return
         session = sessions.get(message.chat.id)
         if session is None:
-            session = DangerousGroup(
-                host_id=callback.from_user.id, board_chat_id=message.chat.id
+            await message.answer(
+                "«Опасные слова»: выберите категорию. Слова, которые уже "
+                "выпадали в этой беседе, больше не повторяются.",
+                reply_markup=create_dg_category_keyboard(),
             )
-            sessions[message.chat.id] = session
-        else:
-            # партия уже идёт: старое табло гасим, чтобы жил один комплект кнопок
-            await _disable_board(callback.bot, session)
-            session.board_chat_id = message.chat.id
+            await callback.answer()
+            return
+        # партия уже идёт: старое табло гасим, чтобы жил один комплект кнопок
+        await _disable_board(callback.bot, session)
+        session.board_chat_id = message.chat.id
         sent = await message.answer(
             _render_board(session),
             reply_markup=create_dangerous_group_keyboard(),
         )
         session.board_message_id = sent.message_id
         await callback.answer()
+
+    @router.callback_query(data_startswith(CB_DG_CATEGORY_PREFIX))
+    async def handle_category(callback: CallbackQuery) -> None:
+        """начинает партию с выбранной категорией: табло встаёт на место выбора"""
+        message = callback.message
+        category = (callback.data or "")[len(CB_DG_CATEGORY_PREFIX) :]
+        if not isinstance(message, Message) or not _is_known_category(category):
+            await callback.answer()
+            return
+        if message.chat.id in sessions:
+            await callback.answer(
+                "Партия уже идёт: открой её табло кнопкой «Опасные слова».",
+                show_alert=True,
+            )
+            return
+        session = DangerousGroup(
+            host_id=callback.from_user.id,
+            category=category,
+            board_chat_id=message.chat.id,
+        )
+        sessions[message.chat.id] = session
+        await message.edit_text(
+            _render_board(session), reply_markup=create_dangerous_group_keyboard()
+        )
+        session.board_message_id = message.message_id
+        await callback.answer(f"Категория: {dg_category_title(category)}.")
 
     @router.callback_query(data_startswith(CB_DG_EXPLAIN_PREFIX))
     async def handle_explain(callback: CallbackQuery) -> None:
@@ -152,12 +187,14 @@ def create_dangerous_group_router(
             return
         repeat = session.explainer_ids[team] == user_id
         word = session.words[rival]
-        issued = session.issued_words
+        category = session.category
         if word is None or not repeat:
-            pool = await _word_pool(callback, content, storage)
-            if pool is None:
+            drawn = await _draw_fresh_word(
+                callback, session.category, chat_id, content, storage
+            )
+            if drawn is None:
                 return
-            word, issued = pick_word(pool, session.issued_words)
+            word, category = drawn
         try:
             await bot.send_message(
                 user_id,
@@ -169,8 +206,11 @@ def create_dangerous_group_router(
                 "Не дошло: нужен /start в личке с ботом.", show_alert=True
             )
             return
+        if not await _mark_word_used(callback, chat_id, word, storage):
+            return
+        category_before = session.category
+        session.category = category
         session.words[rival] = word
-        session.issued_words = issued
         if not repeat:
             # у нового объясняющего своего слова нет, а слово соперников
             # сменилось: обе дорожки нужно отправить заново
@@ -181,6 +221,7 @@ def create_dangerous_group_router(
         await _edit_board(callback, session)
         await callback.answer(
             f"Ты объясняешь за команду {team + 1}. Слово для соперников - в ЛС."
+            + _mix_notice(category_before, session.category)
         )
 
     @router.callback_query(data_startswith(CB_DG_LEGACY_WORD_PREFIX))
@@ -268,22 +309,25 @@ def create_dangerous_group_router(
                 "Слово уже у объясняющего: реролл закрыт.", show_alert=True
             )
             return
-        pool = await _word_pool(callback, content, storage)
-        if pool is None:
+        drawn = await _draw_fresh_word(
+            callback, session.category, chat_id, content, storage
+        )
+        if drawn is None:
             return
-        word, issued = pick_word(pool, session.issued_words)
-        try:
-            await message.edit_text(
-                _riddle_text(team, word),
-                reply_markup=_riddle_keyboard(chat_id, team, word),
-            )
-        except TelegramBadRequest as error:
-            # круг слов пройден и выпало то же слово: карточка и так верна
-            if not is_not_modified(error):
-                raise
+        word, category = drawn
+        # в историю до показа: иначе при сбое базы карточка разошлась бы с партией
+        if not await _mark_word_used(callback, chat_id, word, storage):
+            return
+        await message.edit_text(
+            _riddle_text(team, word),
+            reply_markup=_riddle_keyboard(chat_id, team, word),
+        )
+        category_before = session.category
+        session.category = category
         session.words[team] = word
-        session.issued_words = issued
-        await callback.answer("Новое слово.")
+        if category != category_before:
+            await _refresh_board(callback.bot, session)
+        await callback.answer("Новое слово." + _mix_notice(category_before, category))
 
     @router.callback_query(F.data == CB_DG_NEXT)
     async def handle_new_round(callback: CallbackQuery) -> None:
@@ -543,19 +587,70 @@ def create_dangerous_group_router(
     return router
 
 
-async def _word_pool(
+async def _draw_fresh_word(
     callback: CallbackQuery,
+    category: str,
+    chat_id: int,
     content: DangerousWordsContent,
     storage: SQLiteHistoryStorage,
-) -> list[str] | None:
-    """собирает пул слов партии без дублей, при сбое базы отвечая игроку"""
+) -> tuple[str, str] | None:
+    """тянет слово, которое ещё не выпадало в беседе, и категорию, откуда оно
+
+    кончилась категория - слово берётся из «всего вперемешку», где лежат и
+    слова, добавленные админом; кончились все слова - игрокам говорится это
+    прямо, а не начинается новый круг. партию функция не меняет: категорию
+    вызывающий записывает, только когда слово дошло
+    """
     try:
+        used = await storage.get_chat_used_words(chat_id)
         custom = await storage.get_custom_words(DANGEROUS_WORDS_GAME_ID)
     except DatabaseError:
         logger.exception("database_error", extra={"action": "dg_word"})
         await callback.answer("Ошибка БД. Попробуй позже.", show_alert=True)
         return None
-    return list(dict.fromkeys(content.words + custom))
+    for source in dict.fromkeys((category, DG_MIX_CATEGORY)):
+        word = pick_fresh_word(_category_pool(content, custom, source), used)
+        if word is not None:
+            return word, source
+    await callback.answer(
+        "В этой беседе уже выпали все слова игры: новых не осталось.",
+        show_alert=True,
+    )
+    return None
+
+
+async def _mark_word_used(
+    callback: CallbackQuery, chat_id: int, word: str, storage: SQLiteHistoryStorage
+) -> bool:
+    """записывает доставленное слово в историю беседы, при сбое отвечая игроку"""
+    try:
+        await storage.mark_chat_word_used(chat_id, word)
+    except DatabaseError:
+        logger.exception("database_error", extra={"action": "dg_mark_word"})
+        await callback.answer("Ошибка БД. Попробуй позже.", show_alert=True)
+        return False
+    return True
+
+
+def _category_pool(
+    content: DangerousWordsContent, custom: list[str], category: str
+) -> list[str]:
+    """слова категории; во «всём вперемешку» - все категории и слова админа"""
+    if category == DG_MIX_CATEGORY:
+        return list(dict.fromkeys(all_dangerous_words(content) + custom))
+    return content.categories[category]
+
+
+def _is_known_category(category: str) -> bool:
+    """проверяет ключ категории из кнопки выбора"""
+    return category in DG_WORD_CATEGORIES or category == DG_MIX_CATEGORY
+
+
+def _mix_notice(category_before: str, category_after: str) -> str:
+    """приписка к ответу, когда категория кончилась и партия ушла вперемешку"""
+    if category_before == category_after:
+        return ""
+    return " Слова категории кончились: дальше всё вперемешку."
 
 
 def _ready_lanes(session: DangerousGroup) -> list[tuple[int, str, int]]:
@@ -761,6 +856,7 @@ def _dump_session(session: DangerousGroup) -> dict[str, Any]:
     """сериализует партию «опасные слова» в словарь"""
     return {
         "host_id": session.host_id,
+        "category": session.category,
         "board_chat_id": session.board_chat_id,
         "board_message_id": session.board_message_id,
         "words": session.words,
@@ -770,16 +866,24 @@ def _dump_session(session: DangerousGroup) -> dict[str, Any]:
         "boss_revealed": session.boss_revealed,
         "pending_curse_id": session.pending_curse_id,
         "pending_boss_id": session.pending_boss_id,
-        "issued_words": list(session.issued_words),
         "issued_curses": list(session.issued_curses),
         "issued_bosses": list(session.issued_bosses),
     }
 
 
 def _load_session(data: dict[str, Any]) -> DangerousGroup:
-    """восстанавливает партию «опасные слова» из словаря"""
+    """восстанавливает партию «опасные слова» из словаря
+
+    неизвестная категория - несовместимый снапшот: ValueError отдаёт его
+    restore_sessions на пропуск, иначе каждая раздача падала бы на ключе
+    """
+    # партии, начатые до выбора категорий, доигрываются вперемешку
+    category = data.get("category", DG_MIX_CATEGORY)
+    if not _is_known_category(category):
+        raise ValueError(f"неизвестная категория в снапшоте: {category}")
     return DangerousGroup(
         host_id=data["host_id"],
+        category=category,
         board_chat_id=data.get("board_chat_id", 0),
         board_message_id=data.get("board_message_id"),
         words=list(data["words"]),
@@ -789,7 +893,6 @@ def _load_session(data: dict[str, Any]) -> DangerousGroup:
         boss_revealed=data["boss_revealed"],
         pending_curse_id=data.get("pending_curse_id"),
         pending_boss_id=data.get("pending_boss_id"),
-        issued_words=set(data["issued_words"]),
         issued_curses=set(data["issued_curses"]),
         issued_bosses=set(data["issued_bosses"]),
     )
@@ -899,5 +1002,7 @@ def _render_board(session: DangerousGroup) -> str:
             f"{team_label(team)}: слово {word_state}, "
             f"объясняющий {explainer}, {sent_state}."
         )
-    lines.extend(["", f"Босс: {boss}."])
+    lines.extend(
+        ["", f"Категория: {dg_category_title(session.category)}.", f"Босс: {boss}."]
+    )
     return "\n".join(lines)

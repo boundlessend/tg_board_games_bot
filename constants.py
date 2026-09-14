@@ -61,6 +61,23 @@ WORD_GAME_RESET_TITLE = "Новая игра (сбросить)"
 
 DANGEROUS_WORDS_GAME_ID = "dangerous_words"
 
+# категории «Опасных слов»: порядок задаёт и кнопки выбора, и ключи data/words.json
+DG_WORD_CATEGORIES: dict[str, str] = {
+    "nature": "Природа",
+    "fantasy": "Фэнтези и мифы",
+    "science": "Наука и техника",
+    "culture": "Культура и досуг",
+    "people": "Люди и отношения",
+}
+DG_MIX_CATEGORY = "mix"
+DG_MIX_TITLE = "Всё вперемешку"
+
+
+def dg_category_title(category: str) -> str:
+    """название категории «Опасных слов» по ключу"""
+    return DG_WORD_CATEGORIES.get(category, DG_MIX_TITLE)
+
+
 CB_BK_OPEN = "bk:open"
 CB_BK_JOIN = "bk:join"
 CB_BK_LEAVE = "bk:leave"
@@ -106,6 +123,7 @@ CB_ADMIN_STATS = "admin:stats"
 CB_ADMIN_CLOSE = "admin:close"
 
 CB_DG_OPEN = "dg:open"
+CB_DG_CATEGORY_PREFIX = "dg:cat:"
 CB_DG_EXPLAIN_PREFIX = "dg:explain:"
 # «Тянуть слово 1/2» больше нет на табло: префикс ловит кнопки старых табло
 CB_DG_LEGACY_WORD_PREFIX = "dg:word:"

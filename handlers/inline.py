@@ -9,7 +9,7 @@ from aiogram.types import (
 
 from constants import DANGEROUS_WORDS_GAME_ID
 from database import SQLiteHistoryStorage
-from services.content import DangerousWordsContent
+from services.content import DangerousWordsContent, all_dangerous_words
 
 INLINE_RESULTS_LIMIT = 10
 
@@ -28,7 +28,7 @@ def create_inline_router(
         рантайме, но mypy ругается на инвариантность list против union-типа
         """
         custom_words = await storage.get_custom_words(DANGEROUS_WORDS_GAME_ID)
-        pool = list(dict.fromkeys(content.words + custom_words))
+        pool = list(dict.fromkeys(all_dangerous_words(content) + custom_words))
         words = _select_inline_words(pool, query.query.strip())
         results = [
             InlineQueryResultArticle(

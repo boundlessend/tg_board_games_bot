@@ -4,14 +4,21 @@
 каждое добавленное слово ломало бы тест
 """
 
+import json
+import shutil
 from pathlib import Path
+
+import pytest
 
 from config import _parse_admin_ids, _resolve_database_path
 from services.bunker import MAX_PLAYERS, BunkerContent
 from services.content import (
     DangerousWordsContent,
+    DataFileError,
     WordGame,
+    all_dangerous_words,
     group_games,
+    load_dangerous_words_content,
     private_games,
 )
 
@@ -21,15 +28,49 @@ MIN_WORDS_PER_GAME = 100
 def test_dangerous_content_has_no_duplicates(
     dangerous_content: DangerousWordsContent,
 ) -> None:
-    """слова, проклятия и боссы загружены и уникальны"""
-    assert len(dangerous_content.words) >= MIN_WORDS_PER_GAME
-    assert len(dangerous_content.words) == len(set(dangerous_content.words))
+    """слова разложены по всем категориям без повторов, проклятия и боссы уникальны"""
+    for words in dangerous_content.categories.values():
+        assert len(words) >= MIN_WORDS_PER_GAME
+    words = all_dangerous_words(dangerous_content)
+    # «ёж» и «еж» в игре одно слово: повтор не должен прятаться за буквой ё
+    assert len({word.replace("ё", "е") for word in words}) == len(words)
 
     curse_ids = [curse.id for curse in dangerous_content.curses]
     assert curse_ids and len(curse_ids) == len(set(curse_ids))
 
     boss_ids = [boss.id for boss in dangerous_content.bosses]
     assert boss_ids and len(boss_ids) == len(set(boss_ids))
+
+
+_ONE_WORD_PER_CATEGORY = {
+    "nature": ["кот"],
+    "fantasy": ["дракон"],
+    "science": ["робот"],
+    "culture": ["гитара"],
+    "people": ["друг"],
+}
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        {"nature": ["кот"]},
+        {**_ONE_WORD_PER_CATEGORY, "ordinary": ["стол"]},
+        {**_ONE_WORD_PER_CATEGORY, "people": []},
+        {**_ONE_WORD_PER_CATEGORY, "people": ["Кот "]},
+    ],
+    ids=["missing_category", "extra_category", "empty_category", "cross_duplicate"],
+)
+def test_words_loader_rejects_malformed_categories(
+    tmp_path: Path, data_dir: Path, words: dict[str, list[str]]
+) -> None:
+    """битый words.json не грузится: без категории, с лишней, пустой или с повтором"""
+    for name in ("curses.json", "bosses.json"):
+        shutil.copy(data_dir / name, tmp_path / name)
+    (tmp_path / "words.json").write_text(json.dumps(words), encoding="utf-8")
+
+    with pytest.raises(DataFileError):
+        load_dangerous_words_content(tmp_path)
 
 
 def test_word_games_loaded_and_split_by_chat_type(

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from constants import DG_WORD_CATEGORIES
+
 
 class ContentError(RuntimeError):
     """ошибка загрузки или выбора игрового контента"""
@@ -44,11 +46,20 @@ class Boss:
 
 @dataclass(frozen=True)
 class DangerousWordsContent:
-    """загруженный контент помощника опасные слова"""
+    """загруженный контент помощника опасные слова
 
-    words: list[str]
+    categories - слова по ключам DG_WORD_CATEGORIES; слово живёт ровно в одной
+    категории
+    """
+
+    categories: dict[str, list[str]]
     curses: list[Curse]
     bosses: list[Boss]
+
+
+def all_dangerous_words(content: DangerousWordsContent) -> list[str]:
+    """слова всех категорий одним списком"""
+    return [word for words in content.categories.values() for word in words]
 
 
 @dataclass(frozen=True)
@@ -129,11 +140,11 @@ def load_dangerous_words_content(data_dir: Path) -> DangerousWordsContent:
     curses_data = _read_json_file(data_dir / "curses.json")
     bosses_data = _read_json_file(data_dir / "bosses.json")
 
-    words = _parse_words(words_data)
+    categories = _parse_word_categories(words_data)
     curses = _parse_curses(curses_data)
     bosses = _parse_bosses(bosses_data)
 
-    return DangerousWordsContent(words=words, curses=curses, bosses=bosses)
+    return DangerousWordsContent(categories=categories, curses=curses, bosses=bosses)
 
 
 def _read_json_file(file_path: Path) -> Any:
@@ -148,30 +159,27 @@ def _read_json_file(file_path: Path) -> Any:
         raise DataFileError(f"JSON-файл имеет неверный формат: {file_path}") from error
 
 
-def _parse_words(data: Any) -> list[str]:
-    """проверяет структуру слов и объединяет оба списка"""
-    if not isinstance(data, dict):
+def _parse_word_categories(data: Any) -> dict[str, list[str]]:
+    """проверяет, что слова разложены ровно по известным категориям без повторов"""
+    if not isinstance(data, dict) or set(data) != set(DG_WORD_CATEGORIES):
         raise DataFileError(
-            "words.json должен быть объектом с ключами ordinary и fantasy."
+            "words.json должен быть объектом с ключами "
+            f"{', '.join(DG_WORD_CATEGORIES)}."
         )
 
-    ordinary = _read_words_group(data, "ordinary")
-    fantasy = _read_words_group(data, "fantasy")
-    words = ordinary + fantasy
-
-    if len(words) == 0:
-        raise DataFileError("Список слов пуст.")
+    categories = {key: _read_words_group(data, key) for key in DG_WORD_CATEGORIES}
+    words = [word for group in categories.values() for word in group]
     if len(words) != len(set(words)):
         raise DataFileError("words.json содержит повторяющиеся слова.")
 
-    return words
+    return categories
 
 
 def _read_words_group(data: dict[str, Any], group_name: str) -> list[str]:
-    """читает одну тематическую группу слов"""
+    """читает одну категорию слов"""
     value = data.get(group_name)
-    if not isinstance(value, list):
-        raise DataFileError(f"words.json должен содержать список {group_name}.")
+    if not isinstance(value, list) or len(value) == 0:
+        raise DataFileError(f"words.json: список {group_name} пуст или не список.")
 
     words: list[str] = []
     for item in value:

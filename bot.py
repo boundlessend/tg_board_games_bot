@@ -296,6 +296,9 @@ def create_lifecycle_router(
         await _persist_chat(
             storage, group_sessions, dangerous_sessions, bunker_sessions, new_chat_id
         )
+        # последним: сбой переноса истории слов не должен сорвать перенос партий.
+        # без него супергруппа начала бы «Опасные слова» с чистой истории
+        await storage.move_chat_used_words(old_chat_id, new_chat_id)
         logger.info(
             "chat_sessions_migrated",
             extra={"chat_id": old_chat_id, "new_chat_id": new_chat_id},
